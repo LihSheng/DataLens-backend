@@ -1,20 +1,68 @@
 """
-POST /query endpoint.
-Moved verbatim from the original main.py — no logic changes in Stage 0.
-"""
-from typing import List
+Chat API — SSE streaming + RAG query endpoints.
+Stage 1: retrieval pipeline via RAGChain (hybrid + rerank + filters).
 
-from fastapi import APIRouter, HTTPException
+Matches frontend expectations:
+- POST /api/chat — streaming SSE, accepts { message, conversationId?, filters? }
+- POST /api/query — plain JSON, accepts { question, k, settings?, filters? }
+"""
+from typing import List, Optional, AsyncIterator
+import json
+import asyncio
+
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.services.vectorstore_service import get_vectorstore, get_llm, build_qa_chain
+from app.chains.rag_chain import RAGChain
+from app.config import settings as app_settings
 
 router = APIRouter()
 
 
+# ─────────────────────────────────────────────────────────
+# Request/Response models
+# ─────────────────────────────────────────────────────────
+
+class ChatFilters(BaseModel):
+    document_ids: Optional[List[str]] = None
+    sources: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+
+
+class ChatRequest(BaseModel):
+    """Frontend-facing chat request — uses 'message' field."""
+    message: str
+    conversation_id: Optional[str] = None
+    filters: Optional[ChatFilters] = None
+
+
+class ChatResponse(BaseModel):
+    """Frontend-facing plain JSON response (non-streaming)."""
+    answer: str
+    sources: List[str]
+    conversation_id: Optional[str] = None
+
+
+class QuerySettings(BaseModel):
+    query_expansion: Optional[bool] = None
+    hyde: Optional[bool] = None
+    reranker: Optional[bool] = None
+
+
+class QueryFilters(BaseModel):
+    document_ids: Optional[List[str]] = None
+    sources: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+
+
 class QueryRequest(BaseModel):
+    """Internal /query endpoint — uses 'question' field."""
     question: str
-    k: int = 4
+    k: int = 8
+    rerank_top_n: int = 4
+    settings: Optional[QuerySettings] = None
+    filters: Optional[QueryFilters] = None
 
 
 class QueryResponse(BaseModel):
@@ -22,27 +70,80 @@ class QueryResponse(BaseModel):
     sources: List[str]
 
 
-qa_chain_cache = None
+# ─────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────
+
+def _build_rag_chain(req_settings: dict, req_filters: dict = None) -> RAGChain:
+    """Build RAGChain with merged settings (app defaults + request overrides)."""
+    chain_settings = {
+        "query_expansion": app_settings.query_expansion_enabled,
+        "hyde": app_settings.hyde_enabled,
+        "reranker": app_settings.reranker_enabled,
+        "confidence_threshold": app_settings.confidence_threshold,
+    }
+    chain_settings.update({k: v for k, v in req_settings.items() if v is not None})
+
+    filters = req_filters or {}
+    filters = {k: v for k, v in filters.items() if v is not None}
+
+    return RAGChain(settings=chain_settings, filters=filters or None)
+
+
+def _format_sources(docs) -> List[str]:
+    return [
+        f"[{doc.metadata.get('source', 'unknown')}] {doc.page_content[:200]}"
+        for doc in docs
+    ]
+
+
+# ─────────────────────────────────────────────────────────
+# Endpoints
+# ─────────────────────────────────────────────────────────
+
+@router.post("/chat")
+async def chat(req: ChatRequest):
+    """
+    SSE streaming chat endpoint — matches frontend's sendMessage().
+    FE calls POST /api/chat with { message, conversationId?, filters? }
+    """
+    chain = _build_rag_chain({}, req.filters and req.filters.model_dump(exclude_none=True))
+
+    async def event_stream() -> AsyncIterator[str]:
+        result = chain.invoke({"question": req.message})
+        answer = result["answer"]
+        sources = _format_sources(result.get("source_documents", []))
+
+        # Send answer
+        yield f"data: {json.dumps({'type': 'answer', 'content': answer})}\n\n"
+        # Send sources
+        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+        # Done
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
     """
-    Ask a question over ingested documents.
-    Delegates to the shared vectorstore + LLM infrastructure.
+    Plain JSON query endpoint for internal/testing use.
+    Full retrieval pipeline: HybridRetriever + optional QueryExpander + HyDE + Reranker.
     """
-    global qa_chain_cache
+    chain_settings = req.settings.model_dump(exclude_none=True) if req.settings else {}
+    chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
 
-    if qa_chain_cache is None:
-        qa_chain_cache = build_qa_chain()
+    chain = _build_rag_chain(chain_settings, chain_filters)
+    result = chain.invoke({"question": req.question})
 
-    result = qa_chain_cache.invoke({"query": req.question})
-    answer = result["result"]
-
-    sources = []
-    if "source_documents" in result:
-        for doc in result["source_documents"]:
-            src = doc.metadata.get("source", "unknown")
-            sources.append(f"[{src}] {doc.page_content[:200]}")
-
-    return QueryResponse(answer=answer, sources=sources)
+    return QueryResponse(
+        answer=result["answer"],
+        sources=_format_sources(result.get("source_documents", [])),
+    )
