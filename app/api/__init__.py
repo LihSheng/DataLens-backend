@@ -9,6 +9,10 @@ from app.api import (
     audit,
     retention,
     user_management,
+    export,
+    sharing,
+    connectors,
+    search,
 )
 
 __all__ = [
@@ -21,4 +25,8 @@ __all__ = [
     "audit",
     "retention",
     "user_management",
+    "export",
+    "sharing",
+    "connectors",
+    "search",
 ]

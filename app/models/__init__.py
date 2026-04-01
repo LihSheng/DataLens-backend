@@ -9,6 +9,8 @@ from app.models.retention_policy import RetentionPolicy
 from app.models.evaluation import RAGSettings
 from app.models.golden_dataset import GoldenDataset
 from app.models.experiment import Experiment, ExperimentResult
+from app.models.share_token import ShareToken
+from app.models.connector_config import ConnectorConfig
 
 __all__ = [
     "User",
@@ -26,4 +28,6 @@ __all__ = [
     "GoldenDataset",
     "Experiment",
     "ExperimentResult",
+    "ShareToken",
+    "ConnectorConfig",
 ]

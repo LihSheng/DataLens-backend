@@ -41,6 +41,14 @@ app.include_router(audit.router, prefix="/api", tags=["audit"])
 app.include_router(retention.router, prefix="/api", tags=["retention"])
 app.include_router(user_management.router, prefix="/api", tags=["users"])
 
+# Stage 8 — Platform Features: export, sharing, connectors, search
+from app.api import export, sharing, connectors, search  # noqa: E402
+
+app.include_router(export.router, prefix="/api", tags=["exports"])
+app.include_router(sharing.router, prefix="/api", tags=["sharing"])
+app.include_router(connectors.router, prefix="/api", tags=["connectors"])
+app.include_router(search.router, prefix="/api", tags=["search"])
+
 
 @app.get("/health")
 def health():
