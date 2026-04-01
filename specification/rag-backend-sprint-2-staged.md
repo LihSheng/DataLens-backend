@@ -210,15 +210,25 @@ Goal: Add learning loop
 
 ---
 
-## 🟢 STAGE 7 — Governance (B2.7)
+## ✅ STAGE 7 — Governance (B2.7)
 
 Goal: Enterprise readiness
 
 ### Tasks
-- Audit logging
-- ACL enforcement
-- Retention policy
-- User data deletion
+- [x] Audit logging
+- [x] ACL enforcement
+- [x] Retention policy
+- [x] User data deletion
+
+### Output
+- `audit_log` + `retention_policy` DB tables
+- `require_admin()` + `require_admin_or_self()` dependencies in `app/dependencies.py`
+- `POST /api/admin/audit` (list) + `GET /api/admin/audit/export` (CSV)
+- `GET/PATCH /api/settings/retention`
+- `POST /api/users/me/delete` (GDPR cascade soft-delete)
+- `DELETE /api/admin/users/{id}` (hard delete)
+- Celery daily `retention.run` task enforcing per-resource retention from DB
+- `users` table created with `is_deleted`/`deleted_at` soft-delete columns
 
 ---
 
