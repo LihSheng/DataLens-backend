@@ -8,6 +8,13 @@ from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings(BaseSettings):
     # --- Existing GROQ/MiniMax provider config ---
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
@@ -71,14 +78,24 @@ class Settings(BaseSettings):
     )
 
     # RAG settings (new model fields)
-    query_expansion_enabled: bool = False
+    query_expansion_enabled: bool = _env_bool("QUERY_EXPANSION_ENABLED", False)
 
     # Chunking defaults
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "200"))
-    hyde_enabled: bool = False
-    reranker_enabled: bool = False
-    confidence_threshold: float = 0.7
+    hyde_enabled: bool = _env_bool("HYDE_ENABLED", False)
+    reranker_enabled: bool = _env_bool("RERANKER_ENABLED", False)
+    confidence_threshold: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
+
+    # Stage 5
+    semantic_cache_enabled: bool = _env_bool("SEMANTIC_CACHE_ENABLED", True)
+    semantic_cache_threshold: float = float(
+        os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.9")
+    )
+    context_max_tokens: int = int(os.getenv("CONTEXT_MAX_TOKENS", "1800"))
+    routing_mode: str = os.getenv("ROUTING_MODE", "balanced")
+    fast_model: str = os.getenv("FAST_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+    quality_model: str = os.getenv("QUALITY_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
 
     model_config = SettingsConfigDict(
         env_file=".env",

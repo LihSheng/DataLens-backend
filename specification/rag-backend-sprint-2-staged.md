@@ -167,7 +167,7 @@ Goal: Prevent hallucination
 
 ---
 
-## 🟢 STAGE 4 — Memory + Enrichment (B2.3)
+## ✅ STAGE 4 — Memory + Enrichment (B2.3)
 
 Goal: Improve UX
 
@@ -179,7 +179,7 @@ Goal: Improve UX
 
 ---
 
-## 🟢 STAGE 5 — Performance Layer (B2.5)
+## ✅ STAGE 5 — Performance Layer (B2.5)
 
 Goal: Reduce cost + latency
 

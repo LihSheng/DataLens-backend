@@ -62,24 +62,24 @@ def get_vectorstore():
     return _vectorstore
 
 
-def get_llm():
+def get_llm(model_name: Optional[str] = None, temperature: float = 0.7):
     """Returns the configured LLM (Groq or MiniMax/OpenAI-compatible)."""
     if USE_PROVIDER == "groq":
         from langchain_groq import ChatGroq
 
         return ChatGroq(
-            model=GROQ_MODEL,
+            model=model_name or GROQ_MODEL,
             api_key=GROQ_API_KEY,
-            temperature=0.7,
+            temperature=temperature,
         )
     else:
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
-            model=MINIMAX_MODEL,
+            model=model_name or MINIMAX_MODEL,
             openai_api_key=MINIMAX_API_KEY,
             openai_api_base=OPENAI_API_BASE,
-            temperature=0.7,
+            temperature=temperature,
         )
 
 

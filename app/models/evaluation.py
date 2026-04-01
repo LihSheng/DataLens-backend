@@ -44,6 +44,15 @@ class RAGSettings(Base):
     enable_followup: Mapped[bool] = mapped_column(Boolean, default=True)
     conversation_history_limit: Mapped[int] = mapped_column(Integer, default=10)
 
+    # Performance (Stage 5)
+    semantic_cache_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    semantic_cache_threshold: Mapped[float] = mapped_column(Float, default=0.9)
+    context_max_tokens: Mapped[int] = mapped_column(Integer, default=1800)
+    routing_mode: Mapped[str] = mapped_column(String, default="balanced")
+    fast_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    quality_model: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cost_tracking_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )

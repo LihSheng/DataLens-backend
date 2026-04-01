@@ -20,10 +20,11 @@ app.add_middleware(
 )
 
 # Import and mount existing endpoints from app/api/
-from app.api import chat, documents  # noqa: E402
+from app.api import chat, documents, costs  # noqa: E402
 
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(documents.router, prefix="/api", tags=["documents"])
+app.include_router(costs.router, prefix="/api", tags=["costs"])
 
 
 @app.get("/health")

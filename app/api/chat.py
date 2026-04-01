@@ -13,18 +13,20 @@ from typing import List, Optional, AsyncIterator
 
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chains.rag_chain import RAGChain
 from app.config import settings as app_settings
+from app.db.session import get_db
 from app.memory.conversation_memory import (
     add_user_message,
     add_assistant_message,
-    conversation_exists,
     get_conversation_memory,
 )
+from app.services.cost_tracker import record_query_cost
 
 router = APIRouter()
 
@@ -64,6 +66,13 @@ class QuerySettings(BaseModel):
     enable_memory: Optional[bool] = True
     enable_followup: Optional[bool] = True
     conversation_history_limit: Optional[int] = 10
+    # Stage 5
+    semantic_cache_enabled: Optional[bool] = True
+    semantic_cache_threshold: Optional[float] = None
+    context_max_tokens: Optional[int] = None
+    routing_mode: Optional[str] = None
+    fast_model: Optional[str] = None
+    quality_model: Optional[str] = None
 
 
 class QueryFilters(BaseModel):
@@ -99,6 +108,11 @@ class QueryResponse(BaseModel):
     grounded: Optional[bool] = None
     citations_valid: Optional[bool] = None
     followup_questions: List[str] = []
+    cache_hit: bool = False
+    model: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 # ─────────────────────────────────────────────────────────
@@ -107,7 +121,7 @@ class QueryResponse(BaseModel):
 
 def _ensure_conversation_id(conversation_id: Optional[str]) -> str:
     """Return existing ID or generate a new one."""
-    if conversation_id and conversation_exists(conversation_id):
+    if conversation_id and get_conversation_memory().conversation_exists(conversation_id):
         return conversation_id
     return str(uuid.uuid4())
 
@@ -127,6 +141,13 @@ def _build_rag_chain(
         "enable_memory": True,
         "enable_followup": True,
         "conversation_history_limit": 10,
+        # Stage 5 defaults
+        "semantic_cache_enabled": app_settings.semantic_cache_enabled,
+        "semantic_cache_threshold": app_settings.semantic_cache_threshold,
+        "context_max_tokens": app_settings.context_max_tokens,
+        "routing_mode": app_settings.routing_mode,
+        "fast_model": app_settings.fast_model,
+        "quality_model": app_settings.quality_model,
     }
     chain_settings.update({k: v for k, v in req_settings.items() if v is not None})
 
@@ -155,7 +176,7 @@ def _format_sources(docs) -> List[str]:
 # ─────────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     """
     SSE streaming chat endpoint — matches frontend's sendMessage().
     Also stores messages in Redis ConversationMemory and returns
@@ -164,8 +185,8 @@ async def chat(req: ChatRequest):
     # Ensure conversation exists
     conversation_id = _ensure_conversation_id(req.conversation_id)
 
-    chain_settings = req.filters and req.filters.model_dump(exclude_none=True) or {}
-    chain = _build_rag_chain({}, chain_settings, conversation_id=conversation_id)
+    chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
+    chain = _build_rag_chain({}, chain_filters, conversation_id=conversation_id)
 
     async def event_stream() -> AsyncIterator[str]:
         result = chain.invoke({"question": req.message})
@@ -188,6 +209,21 @@ async def chat(req: ChatRequest):
             }
         add_assistant_message(conversation_id, answer, metadata=metadata, trace_id=trace_id)
 
+        # Persist QueryCost (best-effort)
+        try:
+            await record_query_cost(
+                db=db,
+                user_id="anonymous",
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                model=result.get("model", ""),
+                input_tokens=int(result.get("input_tokens", 0)),
+                output_tokens=int(result.get("output_tokens", 0)),
+                cost_usd=float(result.get("cost_usd", 0.0)),
+            )
+        except Exception:
+            pass
+
         # Stream answer
         yield f"data: {json.dumps({'type': 'answer', 'content': answer})}\n\n"
         # Stream sources
@@ -197,6 +233,8 @@ async def chat(req: ChatRequest):
         # Stream follow-up questions
         if followups:
             yield f"data: {json.dumps({'type': 'followup_questions', 'questions': followups})}\n\n"
+        # Stream performance/cost metadata
+        yield f"data: {json.dumps({'type': 'performance', 'cache_hit': bool(result.get('cache_hit', False)), 'model': result.get('model'), 'input_tokens': int(result.get('input_tokens', 0)), 'output_tokens': int(result.get('output_tokens', 0)), 'cost_usd': float(result.get('cost_usd', 0.0))})}\n\n"
         # Done
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -211,7 +249,7 @@ async def chat(req: ChatRequest):
 
 
 @router.post("/query", response_model=QueryResponse)
-def query(req: QueryRequest):
+async def query(req: QueryRequest, db: AsyncSession = Depends(get_db)):
     """
     Plain JSON query endpoint for internal/testing use.
     Full retrieval pipeline + Stage 3 safety + Stage 4 memory.
@@ -241,6 +279,21 @@ def query(req: QueryRequest):
     except Exception:
         pass  # Non-fatal in query mode
 
+    # Persist QueryCost (best-effort)
+    try:
+        await record_query_cost(
+            db=db,
+            user_id="anonymous",
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+            model=result.get("model", ""),
+            input_tokens=int(result.get("input_tokens", 0)),
+            output_tokens=int(result.get("output_tokens", 0)),
+            cost_usd=float(result.get("cost_usd", 0.0)),
+        )
+    except Exception:
+        pass
+
     return QueryResponse(
         answer=result["answer"],
         sources=_format_sources(result.get("source_documents", [])),
@@ -250,4 +303,9 @@ def query(req: QueryRequest):
         grounded=safety_response.grounded if safety_response else None,
         citations_valid=safety_response.citations_valid if safety_response else None,
         followup_questions=result.get("followup_questions", []),
+        cache_hit=bool(result.get("cache_hit", False)),
+        model=result.get("model"),
+        input_tokens=int(result.get("input_tokens", 0)),
+        output_tokens=int(result.get("output_tokens", 0)),
+        cost_usd=float(result.get("cost_usd", 0.0)),
     )
