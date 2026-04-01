@@ -3,10 +3,12 @@ Vector store + embedding service.
 Re-exports the existing vectorstore / embedding logic from the original main.py.
 No functional changes — pure migration in Stage 0.
 """
-from typing import Optional
+import logging
+from typing import List, Optional
 
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.vectorstores import Milvus, FAISS
+from langchain_core.documents import Document
 from langchain_classic.chains import RetrievalQA
 
 from app.config import (
@@ -53,6 +55,10 @@ def get_vectorstore():
 
     # In-memory FAISS
     _vectorstore = FAISS.from_texts(["initial placeholder"], embeddings)
+    # Initialise BM25 index storage (populated by add_documents_with_bm25)
+    _vectorstore._bm25_texts = []
+    _vectorstore._bm25_metadata = []
+    _vectorstore._bm25 = None
     return _vectorstore
 
 
@@ -89,3 +95,56 @@ def build_qa_chain():
         retriever=vs.as_retriever(search_kwargs={"k": 4}),
     )
     return _qa_chain
+
+
+def add_documents_with_bm25(
+    chunks: List[Document],
+    texts: List[str] = None,
+    metadatas: List[dict] = None,
+) -> None:
+    """
+    Add documents to both the FAISS vector store and the in-memory BM25 index.
+
+    This enables hybrid retrieval (dense + sparse) after documents are ingested.
+
+    Args:
+        chunks: List of LangChain Document objects to add.
+        texts: Optional explicit list of text strings (uses chunk.page_content if None).
+        metadatas: Optional explicit list of metadata dicts (uses chunk.metadata if None).
+    """
+    global _vectorstore
+
+    vs = get_vectorstore()
+
+    # Initialise BM25 lists on first call
+    if not hasattr(vs, "_bm25_texts"):
+        vs._bm25_texts = []
+        vs._bm25_metadata = []
+        vs._bm25 = None
+
+    # Resolve texts / metadatas
+    texts = texts or [c.page_content for c in chunks]
+    metadatas = metadatas or [c.metadata for c in chunks]
+
+    # Add to FAISS
+    vs.add_documents(chunks)
+
+    # Extend BM25 index
+    vs._bm25_texts.extend(texts)
+    vs._bm25_metadata.extend(metadatas)
+
+    # Rebuild BM25 index
+    try:
+        import rank_bm25
+    except ImportError:
+        logging.warning(
+            "rank_bm25 not installed; BM25 index will not be rebuilt. "
+            "Install with: pip install rank-bm25"
+        )
+        return
+
+    tokenized = [t.split(" ") for t in vs._bm25_texts]
+    vs._bm25 = rank_bm25.BM25Okapi(tokenized)
+    logging.info(
+        f"BM25 index rebuilt: {len(vs._bm25_texts)} documents indexed."
+    )
