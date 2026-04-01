@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     allowed_origins: str = os.getenv(
         "ALLOWED_ORIGINS", "http://localhost:5173,https://yourdomain.vercel.app"
     )
+    # Dev-only auth bypass (disabled by default)
+    dev_auth_bypass: bool = _env_bool("DEV_AUTH_BYPASS", False)
+    dev_auth_email: str = os.getenv("DEV_AUTH_EMAIL", "dev@local.test")
+    dev_auth_name: str = os.getenv("DEV_AUTH_NAME", "Dev User")
+    dev_auth_role: str = os.getenv("DEV_AUTH_ROLE", "admin")
 
     # JWT
     jwt_secret: str = os.getenv("JWT_SECRET", "change-me-in-production")

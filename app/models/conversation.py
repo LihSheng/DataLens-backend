@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, DateTime, ForeignKey
+from sqlalchemy import String, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -41,10 +41,10 @@ class Message(Base):
     )
     role: Mapped[str] = mapped_column(String)  # "user" | "assistant"
     content: Mapped[str] = mapped_column(String)
-    trace_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     metadata_json: Mapped[Optional[str]] = mapped_column(
         String, nullable=True
     )  # JSON blob for confidence, grounding etc.
+    token_usage: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     conversation: Mapped["Conversation"] = relationship(
         back_populates="messages"

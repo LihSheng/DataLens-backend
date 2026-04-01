@@ -22,7 +22,8 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+# auto_error=False so we can support optional/dev-bypass auth flows.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 # ─────────────────────────────────────────────────────────
@@ -72,19 +73,66 @@ async def _get_user_by_id(user_id: str) -> Optional[User]:
         return result.scalar_one_or_none()
 
 
+async def _get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+    result = await db.execute(
+        select(User).where(
+            User.email == email,
+            User.is_deleted == False,  # noqa: E712
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _is_dev_bypass_enabled() -> bool:
+    return settings.dev_auth_bypass and settings.app_env != "production"
+
+
+async def _ensure_dev_user(db: AsyncSession) -> User:
+    user = await _get_user_by_email(db, settings.dev_auth_email)
+    if user:
+        return user
+
+    user = User(
+        email=settings.dev_auth_email,
+        name=settings.dev_auth_name,
+        password_hash="dev-bypass",
+        role=settings.dev_auth_role,
+        is_deleted=False,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 # ─────────────────────────────────────────────────────────
 # Core dependencies
 # ─────────────────────────────────────────────────────────
 
 async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
+    token: Annotated[str | None, Depends(oauth2_scheme)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     """
     Validates the JWT bearer token and returns the authenticated User.
     Raises 401 if token is invalid, expired, or user does not exist.
     """
-    payload = _decode_token(token)
+    if not token:
+        if _is_dev_bypass_enabled():
+            return await _ensure_dev_user(db)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        payload = _decode_token(token)
+    except HTTPException:
+        if _is_dev_bypass_enabled():
+            return await _ensure_dev_user(db)
+        raise
+
     user_id: str | None = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -105,14 +153,16 @@ async def get_current_user(
 
 
 async def get_current_user_optional(
-    token: Annotated[str | None, Depends(oauth2_scheme)] = None,
     db: Annotated[AsyncSession, Depends(get_db)],
+    token: Annotated[str | None, Depends(oauth2_scheme)] = None,
 ) -> Optional[User]:
     """
     Returns the authenticated User if a valid token is provided,
     otherwise returns None. Does NOT raise 401.
     """
     if not token:
+        if _is_dev_bypass_enabled():
+            return await _ensure_dev_user(db)
         return None
     try:
         payload = _decode_token(token)
@@ -121,6 +171,8 @@ async def get_current_user_optional(
             return None
         return await _get_user_by_id(user_id)
     except HTTPException:
+        if _is_dev_bypass_enabled():
+            return await _ensure_dev_user(db)
         return None
 
 

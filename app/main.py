@@ -1,53 +1,32 @@
 """
-FastAPI application factory.
-Thin wrapper — endpoints are in app/api/.
-Preserves existing /query and /ingest behaviour for backward compatibility.
+FastAPI app entrypoint for MVP FE/BE integration.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.auth import router as auth_router
+from app.api.mvp import router as mvp_router
 from app.config import settings
 from app.db.session import create_tables
+from app.models import user as _user_model  # noqa: F401
+from app.models import conversation as _conversation_model  # noqa: F401
+from app.models import document as _document_model  # noqa: F401
+from app.models import feedback as _feedback_model  # noqa: F401
+from app.models import share_token as _share_token_model  # noqa: F401
+from app.models import app_setting as _app_setting_model  # noqa: F401
 
 app = FastAPI(title="RAG API", version="1.0.0")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins.split(","),
+    allow_origins=[o.strip() for o in settings.allowed_origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Import and mount existing endpoints from app/api/
-from app.api import chat, documents, costs  # noqa: E402
-
-app.include_router(chat.router, prefix="/api", tags=["chat"])
-app.include_router(documents.router, prefix="/api", tags=["documents"])
-app.include_router(costs.router, prefix="/api", tags=["costs"])
-
-# Stage 6 — Feedback + Evaluation routes
-from app.api import feedback, golden_dataset, experiments  # noqa: E402
-
-app.include_router(feedback.router, prefix="/api", tags=["feedback"])
-app.include_router(golden_dataset.router, prefix="/api", tags=["golden_dataset"])
-app.include_router(experiments.router, prefix="/api", tags=["experiments"])
-
-# Stage 7 — Governance routes
-from app.api import audit, retention, user_management  # noqa: E402
-
-app.include_router(audit.router, prefix="/api", tags=["audit"])
-app.include_router(retention.router, prefix="/api", tags=["retention"])
-app.include_router(user_management.router, prefix="/api", tags=["users"])
-
-# Stage 8 — Platform Features: export, sharing, connectors, search
-from app.api import export, sharing, connectors, search  # noqa: E402
-
-app.include_router(export.router, prefix="/api", tags=["exports"])
-app.include_router(sharing.router, prefix="/api", tags=["sharing"])
-app.include_router(connectors.router, prefix="/api", tags=["connectors"])
-app.include_router(search.router, prefix="/api", tags=["search"])
+app.include_router(auth_router, prefix="/api", tags=["auth"])
+app.include_router(mvp_router, prefix="/api", tags=["mvp"])
 
 
 @app.get("/health")
@@ -58,12 +37,12 @@ def health():
         "llm": settings.groq_model if settings.use_provider == "groq" else settings.minimax_model,
         "embedding_model": settings.embedding_model,
         "vectorstore": settings.vectorstore_type,
+        "dev_auth_bypass": settings.dev_auth_bypass,
     }
 
 
 @app.on_event("startup")
 async def on_startup():
-    """Create database tables on startup (async)."""
     await create_tables()
 
 
