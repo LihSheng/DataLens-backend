@@ -232,15 +232,29 @@ Goal: Enterprise readiness
 
 ---
 
-## 🟢 STAGE 8 — Platform Features (B2.8)
+## ✅ STAGE 8 — Platform Features (B2.8)
 
 Goal: Expand product
 
 ### Tasks
-- Connectors
-- Export (PDF/Markdown)
-- Conversation sharing
-- Full-text search
+- [x] Connectors
+- [x] Export (PDF/Markdown)
+- [x] Conversation sharing
+- [x] Full-text search
+
+### Output
+- `share_tokens` + `connectors_config` DB tables
+- `ConnectorBase` + `FilesystemConnector` + `ConnectorRegistry`
+- Export: Markdown (sync) + PDF via WeasyPrint/pdfkit (sync + async job)
+- Sharing: `POST/GET/DELETE /api/conversations/{id}/share`, `GET /api/shared/{token}` (public)
+- Full-text search: `GET /api/search` with PostgreSQL `plainto_tsquery` + `ts_rank` + highlighted snippets
+- `conversations` + `messages` stub tables created (FTS indexes applied)
+
+---
+
+# 🎉 SPRINT 2 COMPLETE
+
+All 9 stages (0–8) are done ✅
 
 ---
 
