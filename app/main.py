@@ -34,6 +34,13 @@ app.include_router(feedback.router, prefix="/api", tags=["feedback"])
 app.include_router(golden_dataset.router, prefix="/api", tags=["golden_dataset"])
 app.include_router(experiments.router, prefix="/api", tags=["experiments"])
 
+# Stage 7 — Governance routes
+from app.api import audit, retention, user_management  # noqa: E402
+
+app.include_router(audit.router, prefix="/api", tags=["audit"])
+app.include_router(retention.router, prefix="/api", tags=["retention"])
+app.include_router(user_management.router, prefix="/api", tags=["users"])
+
 
 @app.get("/health")
 def health():

@@ -1,5 +1,15 @@
 """API route modules."""
-from app.api import chat, documents, costs, feedback, golden_dataset, experiments
+from app.api import (
+    chat,
+    documents,
+    costs,
+    feedback,
+    golden_dataset,
+    experiments,
+    audit,
+    retention,
+    user_management,
+)
 
 __all__ = [
     "chat",
@@ -8,4 +18,7 @@ __all__ = [
     "feedback",
     "golden_dataset",
     "experiments",
+    "audit",
+    "retention",
+    "user_management",
 ]

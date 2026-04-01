@@ -19,6 +19,7 @@ celery_app = Celery(
     include=[
         "app.workers.ingestion_worker",
         "app.workers.evaluation_worker",  # Stage 6 experiment tasks
+        "app.workers.retention_worker",  # Stage 7 retention task
     ],
 )
 
@@ -31,6 +32,18 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
 )
+
+# ─────────────────────────────────────────────────────────
+# Stage 7: Retention policy Celery Beat schedule
+# ─────────────────────────────────────────────────────────
+
+celery_app.conf.beat_schedule = {
+    "retention-cleanup-daily": {
+        "task": "retention.run",
+        "schedule": 86400.0,  # Run once per day (in seconds)
+        "options": {"queue": "retention"},
+    },
+}
 
 
 # ─────────────────────────────────────────────────────────
