@@ -1,23 +1,25 @@
-"""MessageFeedback model."""
+"""Feedback model — Stage 6."""
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
-from sqlalchemy import String, DateTime
+from sqlalchemy import String, DateTime, Integer, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
 
 
-class MessageFeedback(Base):
-    __tablename__ = "message_feedback"
+class Feedback(Base):
+    __tablename__ = "feedback"
 
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    message_id: Mapped[str] = mapped_column(String)
-    conversation_id: Mapped[str] = mapped_column(String)
-    trace_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    rating: Mapped[str] = mapped_column(String)  # "positive" | "negative"
+    message_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    vote: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # 'positive' | 'negative'
+    rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 1-5
     comment: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # JSON blob
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

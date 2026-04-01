@@ -191,15 +191,22 @@ Goal: Reduce cost + latency
 
 ---
 
-## 🟢 STAGE 6 — Feedback + Evaluation (B2.6)
+## ✅ STAGE 6 — Feedback + Evaluation (B2.6)
 
 Goal: Add learning loop
 
 ### Tasks
-- Feedback API
-- RAGAS evaluation async
-- Golden dataset
-- Experiment framework
+- [x] Feedback API
+- [x] RAGAS evaluation async
+- [x] Golden dataset
+- [x] Experiment framework
+
+### Output
+- `POST/GET /api/feedback` endpoints
+- `POST/GET/DELETE /api/golden` endpoints
+- `POST/GET /api/experiments` + run/status endpoints
+- Celery async experiment runner with RAGAS metrics
+- DB tables: `feedback`, `golden_dataset`, `experiments`, `experiment_results`
 
 ---
 
