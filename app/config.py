@@ -72,6 +72,10 @@ class Settings(BaseSettings):
 
     # RAG settings (new model fields)
     query_expansion_enabled: bool = False
+
+    # Chunking defaults
+    chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
+    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "200"))
     hyde_enabled: bool = False
     reranker_enabled: bool = False
     confidence_threshold: float = 0.7
