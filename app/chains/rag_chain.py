@@ -7,10 +7,14 @@ Integrates:
   - Optional HyDE (hypothetical document embeddings)
   - Optional Reranker (cross-encoder or Cohere)
   - SafetyLayer (Stage 3): guardrails, prompt injection, grounding, citations
+  - ConversationMemory (Stage 4): Redis-backed conversation history injection
+  - FollowUpGenerator (Stage 4): suggested follow-up questions
+  - trace_id propagation throughout
 
 Backward-compatible with the existing /api/chat endpoint contract.
 """
 import logging
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
@@ -18,6 +22,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 
+from app.memory.conversation_memory import get_conversation_memory
+from app.memory.followup_generator import generate_followup_questions
 from app.retrieval.filters import apply_filters
 from app.retrieval.hyde import HyDE
 from app.retrieval.hybrid_retriever import HybridRetriever
@@ -33,6 +39,18 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful AI assistant answering questions based on the provided context.\n"
     "If the context does not contain enough information to answer the question, say so clearly.\n"
     "Always cite relevant parts of the context when answering."
+)
+
+DEFAULT_USER_PROMPT_WITH_MEMORY = (
+    "Conversation history:\n"
+    "{conversation_history}\n"
+    "\n"
+    "Context:\n"
+    "{context}\n"
+    "\n"
+    "Question: {question}\n"
+    "\n"
+    "Answer based strictly on the provided context."
 )
 
 DEFAULT_USER_PROMPT = (
@@ -80,11 +98,22 @@ class RAGChain:
         filters: Optional[Dict[str, Any]] = None,
         k: int = 8,
         rerank_top_n: int = 4,
+        # Stage 4 — memory
+        conversation_id: Optional[str] = None,
+        conversation_history_limit: int = 10,
+        enable_memory: bool = True,
+        enable_followup: bool = True,
+        trace_id: Optional[str] = None,
     ):
         self.settings = settings or {}
         self.filters = filters or {}
         self.k = k
         self.rerank_top_n = rerank_top_n
+        self.conversation_id = conversation_id
+        self.conversation_history_limit = conversation_history_limit
+        self.enable_memory = enable_memory
+        self.enable_followup = enable_followup
+        self.trace_id = trace_id or str(uuid.uuid4())
 
         self._retriever = None
         self._reranker = None
@@ -94,6 +123,25 @@ class RAGChain:
         self._vectorstore = None
         self._chain = None
         self._safety_layer: Optional[SafetyLayer] = None
+        self._conversation_memory = None
+
+    # ------------------------------------------------------------------
+    # Conversation memory
+    # ------------------------------------------------------------------
+
+    def _get_conversation_memory(self):
+        if self._conversation_memory is None:
+            self._conversation_memory = get_conversation_memory()
+        return self._conversation_memory
+
+    def _get_conversation_history(self) -> str:
+        if not self.conversation_id:
+            return ""
+        mem = self._get_conversation_memory()
+        return mem.get_formatted_history(
+            self.conversation_id,
+            limit=self.conversation_history_limit,
+        )
 
     # ------------------------------------------------------------------
     # Safety layer
@@ -226,7 +274,15 @@ class RAGChain:
         """Assemble the LangChain Runnable chain."""
         llm = self._get_llm()
         system_prompt = self.settings.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
-        user_prompt = self.settings.get("user_prompt", DEFAULT_USER_PROMPT)
+
+        # Use memory-aware prompt if conversation history is available
+        history = self._get_conversation_history()
+        if history and self.enable_memory:
+            user_prompt = self.settings.get(
+                "user_prompt", DEFAULT_USER_PROMPT_WITH_MEMORY
+            )
+        else:
+            user_prompt = self.settings.get("user_prompt", DEFAULT_USER_PROMPT)
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
@@ -252,7 +308,12 @@ class RAGChain:
         if self._chain is None:
             self._build_chain()
 
-        result = self._chain.invoke({"question": question, "query": question})
+        history = self._get_conversation_history() if self.enable_memory else ""
+        chain_input = {"question": question, "query": question}
+        if history and self.enable_memory:
+            chain_input["conversation_history"] = history
+
+        result = self._chain.invoke(chain_input)
 
         docs = self._retrieve(question)
         reranked = self._rerank(question, docs)
@@ -305,6 +366,8 @@ class RAGChain:
                 "source_documents": safety_response.source_documents,
                 "safety_response": safety_response,
                 "fallback_triggered": safety_response.fallback_triggered,
+                "trace_id": self.trace_id,
+                "followup_questions": self._generate_followups(safety_response.answer),
             }
 
         # Legacy path — no safety layer
@@ -313,7 +376,20 @@ class RAGChain:
             "answer": answer,
             "source_documents": docs,
             "fallback_triggered": False,
+            "trace_id": self.trace_id,
+            "followup_questions": self._generate_followups(answer),
         }
+
+    def _generate_followups(self, answer: str) -> List[str]:
+        """Generate follow-up questions if enabled."""
+        if not self.enable_followup:
+            return []
+        history = self._get_conversation_history()
+        return generate_followup_questions(
+            conversation_history=history,
+            current_answer=answer,
+            followup_enabled=self.enable_followup,
+        )
 
     def __call__(self, input_: Dict[str, Any]) -> Dict[str, Any]:
         """Convenience callable — mirrors invoke()."""

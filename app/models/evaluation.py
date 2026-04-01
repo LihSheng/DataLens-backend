@@ -39,6 +39,11 @@ class RAGSettings(Base):
     # Retry / fallback
     max_retries: Mapped[int] = mapped_column(Integer, default=1)
 
+    # Memory (Stage 4)
+    enable_memory: Mapped[bool] = mapped_column(Boolean, default=True)
+    enable_followup: Mapped[bool] = mapped_column(Boolean, default=True)
+    conversation_history_limit: Mapped[int] = mapped_column(Integer, default=10)
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
