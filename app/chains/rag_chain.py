@@ -6,11 +6,12 @@ Integrates:
   - Optional QueryExpander (LLM-generated sub-questions)
   - Optional HyDE (hypothetical document embeddings)
   - Optional Reranker (cross-encoder or Cohere)
+  - SafetyLayer (Stage 3): guardrails, prompt injection, grounding, citations
 
 Backward-compatible with the existing /api/chat endpoint contract.
 """
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -22,6 +23,7 @@ from app.retrieval.hyde import HyDE
 from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.query_expander import QueryExpander
 from app.retrieval.reranker import Reranker
+from app.safety.safety_layer import SafetyLayer, SafetyResponse
 from app.services.vectorstore_service import get_llm, get_vectorstore
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,15 @@ class RAGChain:
             - confidence_threshold: float
             - system_prompt: str
             - user_prompt: str
+            # Safety (Stage 3)
+            - guardrails_enabled: bool
+            - prompt_injection_check: bool
+            - grounding_check: bool
+            - citation_validation: bool
+            - grounding_threshold: float
+            - injection_confidence_threshold: float
+            - required_citation_threshold: float
+            - max_retries: int
         filters: Optional dict of filters applied at retrieval time:
             - document_ids: List[str]
             - sources: List[str]
@@ -82,6 +93,20 @@ class RAGChain:
         self._llm = None
         self._vectorstore = None
         self._chain = None
+        self._safety_layer: Optional[SafetyLayer] = None
+
+    # ------------------------------------------------------------------
+    # Safety layer
+    # ------------------------------------------------------------------
+
+    def _get_safety_layer(self) -> SafetyLayer:
+        if self._safety_layer is None:
+            self._safety_layer = SafetyLayer(settings=self.settings)
+        return self._safety_layer
+
+    # ------------------------------------------------------------------
+    # LLM + vectorstore accessors (lazy)
+    # ------------------------------------------------------------------
 
     def _get_llm(self):
         if self._llm is None:
@@ -107,6 +132,10 @@ class RAGChain:
         if self._reranker is None:
             self._reranker = Reranker()
         return self._reranker
+
+    # ------------------------------------------------------------------
+    # Retrieval pipeline
+    # ------------------------------------------------------------------
 
     def _build_retriever(self):
         """
@@ -216,9 +245,27 @@ class RAGChain:
             | StrOutputParser()
         )
 
+    def _run_chain(self, question: str) -> Tuple[str, List[Document]]:
+        """
+        Run the core RAG chain, returning (answer, source_documents).
+        """
+        if self._chain is None:
+            self._build_chain()
+
+        result = self._chain.invoke({"question": question, "query": question})
+
+        docs = self._retrieve(question)
+        reranked = self._rerank(question, docs)
+
+        return result, reranked
+
+    # ------------------------------------------------------------------
+    # Public invoke
+    # ------------------------------------------------------------------
+
     def invoke(self, input_: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run the full RAG chain.
+        Run the full RAG chain with optional SafetyLayer checks.
 
         Args:
             input_: Dict containing at least one of:
@@ -229,20 +276,43 @@ class RAGChain:
             Dict with:
                 - "answer": str  — the LLM's generated answer
                 - "source_documents": List[Document]  — retrieved & re-ranked docs
+                - "safety_response": SafetyResponse  — Stage 3 safety metadata
+                - "fallback_triggered": bool
         """
-        if self._chain is None:
-            self._build_chain()
-
         question = input_.get("question") or input_.get("query")
-        result = self._chain.invoke({"question": question, "query": question})
 
-        # Re-run retrieval to attach source docs to the response
-        docs = self._retrieve(question)
-        reranked = self._rerank(question, docs)
+        # Check if safety features are enabled via any non-None safety flag
+        safety_enabled = any(
+            self.settings.get(flag) is not None
+            for flag in (
+                "guardrails_enabled",
+                "prompt_injection_check",
+                "grounding_check",
+                "citation_validation",
+            )
+        )
 
+        if safety_enabled:
+            safety = self._get_safety_layer()
+
+            def chain_fn(q: str) -> Tuple[str, List[Document]]:
+                return self._run_chain(q)
+
+            safety_response: SafetyResponse = safety.invoke(question, chain_fn)
+
+            return {
+                "answer": safety_response.answer,
+                "source_documents": safety_response.source_documents,
+                "safety_response": safety_response,
+                "fallback_triggered": safety_response.fallback_triggered,
+            }
+
+        # Legacy path — no safety layer
+        answer, docs = self._run_chain(question)
         return {
-            "answer": result,
-            "source_documents": reranked,
+            "answer": answer,
+            "source_documents": docs,
+            "fallback_triggered": False,
         }
 
     def __call__(self, input_: Dict[str, Any]) -> Dict[str, Any]:

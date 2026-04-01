@@ -45,9 +45,19 @@ class ChatResponse(BaseModel):
 
 
 class QuerySettings(BaseModel):
+    # Retrieval
     query_expansion: Optional[bool] = None
     hyde: Optional[bool] = None
     reranker: Optional[bool] = None
+    # Safety + quality (Stage 3)
+    guardrails_enabled: Optional[bool] = None
+    prompt_injection_check: Optional[bool] = None
+    grounding_check: Optional[bool] = None
+    citation_validation: Optional[bool] = None
+    grounding_threshold: Optional[float] = None
+    injection_confidence_threshold: Optional[float] = None
+    required_citation_threshold: Optional[float] = None
+    max_retries: Optional[int] = None
 
 
 class QueryFilters(BaseModel):
@@ -68,6 +78,9 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: List[str]
+    fallback_triggered: bool = False
+    grounded: Optional[bool] = None
+    citations_valid: Optional[bool] = None
 
 
 # ─────────────────────────────────────────────────────────
@@ -136,6 +149,7 @@ def query(req: QueryRequest):
     """
     Plain JSON query endpoint for internal/testing use.
     Full retrieval pipeline: HybridRetriever + optional QueryExpander + HyDE + Reranker.
+    Stage 3: SafetyLayer (guardrails, prompt injection, grounding, citations).
     """
     chain_settings = req.settings.model_dump(exclude_none=True) if req.settings else {}
     chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
@@ -143,7 +157,11 @@ def query(req: QueryRequest):
     chain = _build_rag_chain(chain_settings, chain_filters)
     result = chain.invoke({"question": req.question})
 
+    safety_response = result.get("safety_response")
     return QueryResponse(
         answer=result["answer"],
         sources=_format_sources(result.get("source_documents", [])),
+        fallback_triggered=result.get("fallback_triggered", False),
+        grounded=safety_response.grounded if safety_response else None,
+        citations_valid=safety_response.citations_valid if safety_response else None,
     )

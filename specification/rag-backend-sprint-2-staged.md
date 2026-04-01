@@ -92,7 +92,7 @@ app/
 
 ---
 
-## 🟢 STAGE 0 — Foundation Alignment (NEW)
+## ✅ STAGE 0 — Foundation Alignment (NEW)
 
 Goal: Ensure base system supports Sprint 2 safely
 
@@ -113,7 +113,7 @@ Goal: Ensure base system supports Sprint 2 safely
 
 ---
 
-## 🟢 STAGE 1 — Retrieval Upgrade (B2.1)
+## ✅ STAGE 1 — Retrieval Upgrade (B2.1)
 
 Goal: Improve answer quality
 
@@ -135,7 +135,7 @@ Goal: Improve answer quality
 
 ---
 
-## 🟢 STAGE 2 — Ingestion Pipeline (B2.2)
+## ✅ STAGE 2 — Ingestion Pipeline (B2.2)
 
 Goal: Production-ready document handling
 
@@ -154,7 +154,7 @@ Goal: Production-ready document handling
 
 ---
 
-## 🟢 STAGE 3 — Safety + Grounding (B2.4)
+## ✅ STAGE 3 — Safety + Grounding (B2.4)
 
 Goal: Prevent hallucination
 
