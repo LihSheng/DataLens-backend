@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.mvp import router as mvp_router
+from app.api.phoenix_proxy import router as phoenix_proxy_router
 from app.config import settings
 from app.db.session import create_tables
 
@@ -36,6 +37,7 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(mvp_router, prefix="/api", tags=["mvp"])
+app.include_router(phoenix_proxy_router, prefix="/api", tags=["phoenix"])
 
 
 @app.get("/health")
