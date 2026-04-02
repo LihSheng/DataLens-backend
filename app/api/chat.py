@@ -2,12 +2,16 @@
 Chat API — SSE streaming + RAG query endpoints.
 Stage 1: retrieval pipeline via RAGChain (hybrid + rerank + filters).
 Stage 3: SafetyLayer (guardrails, prompt injection, grounding, citations).
+Stage 3: RAGAS live eval + human feedback (Phoenix span annotations).
 Stage 4: ConversationMemory (Redis), follow-up questions, trace_id propagation.
+Stage 5: ChatResponse contract — trace_metadata field + SSE event.
 
 Matches frontend expectations:
 - POST /api/chat — streaming SSE, accepts { message, conversationId?, filters? }
 - POST /api/query — plain JSON, accepts { question, conversationId?, k, settings?, filters? }
+- POST /api/feedback — human feedback (positive/negative), forwarded to Phoenix.
 """
+import asyncio
 import uuid
 from typing import Any, Dict, List, Optional, AsyncIterator
 
@@ -15,7 +19,7 @@ import json
 
 from opentelemetry import trace as otel_trace
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +33,7 @@ from app.memory.conversation_memory import (
     get_conversation_memory,
 )
 from app.services.cost_tracker import record_query_cost
+from app.services.phoenix_annotations import run_live_ragas_eval, submit_feedback
 
 router = APIRouter()
 
@@ -264,6 +269,15 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
                 'usedChunks': len(result.get('source_documents', [])),
             }
             yield f"data: {json.dumps({'type': 'trace_metadata', 'metadata': meta})}\n\n"
+            # Fire-and-forget RAGAS live evaluation (Stage 3)
+            asyncio.create_task(
+                run_live_ragas_eval(
+                    question=req.message,
+                    answer=answer,
+                    source_docs=result.get("source_documents", []),
+                    trace_id=trace_id,
+                )
+            )
             # Done
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -354,3 +368,52 @@ async def query(req: QueryRequest, db: AsyncSession = Depends(get_db)):
                 "usedChunks": len(result.get("source_documents", [])),
             },
         )
+
+        # Fire-and-forget RAGAS live evaluation (Stage 3)
+        asyncio.create_task(
+            run_live_ragas_eval(
+                question=req.question,
+                answer=result["answer"],
+                source_docs=result.get("source_documents", []),
+                trace_id=trace_id,
+            )
+        )
+
+
+# ─────────────────────────────────────────────────────────
+# Feedback endpoint (Stage 3)
+# ─────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    trace_id: str
+    span_id: Optional[str] = None
+    label: str  # "positive" or "negative"
+
+
+class FeedbackResponse(BaseModel):
+    success: bool
+    trace_id: str
+    label: str
+
+
+@router.post("/feedback", response_model=FeedbackResponse)
+async def post_feedback(req: FeedbackRequest):
+    """
+    Record human feedback (thumbs up/down) for a chat response.
+
+    Feedback is forwarded to Phoenix as a span annotation (Stage 3).
+    This endpoint is public (not admin-gated) so end users can submit feedback.
+    """
+    if req.label not in ("positive", "negative"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="label must be 'positive' or 'negative'",
+        )
+
+    success = await submit_feedback(
+        trace_id=req.trace_id,
+        span_id=req.span_id,
+        label=req.label,
+    )
+
+    return FeedbackResponse(success=success, trace_id=req.trace_id, label=req.label)
