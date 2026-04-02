@@ -68,8 +68,9 @@ class Settings(BaseSettings):
     )
 
     # Phoenix / observability
+    phoenix_base_url: str = os.getenv("PHOENIX_BASE_URL", "http://phoenix:6006")
     phoenix_collector_endpoint: str = os.getenv(
-        "PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces"
+        "PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"
     )
 
     # File storage

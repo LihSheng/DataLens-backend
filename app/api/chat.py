@@ -13,6 +13,8 @@ from typing import List, Optional, AsyncIterator
 
 import json
 
+from opentelemetry import trace as otel_trace
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -126,6 +128,14 @@ def _ensure_conversation_id(conversation_id: Optional[str]) -> str:
     return str(uuid.uuid4())
 
 
+def _get_otel_trace_id(fallback_trace_id: str = "") -> str:
+    """Extract real trace_id from OTel context, falling back to provided value."""
+    ctx = otel_trace.get_current_span().get_span_context()
+    if ctx.is_valid:
+        return format(ctx.trace_id, "032x")
+    return fallback_trace_id
+
+
 def _build_rag_chain(
     req_settings: dict,
     req_filters: dict = None,
@@ -188,55 +198,64 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
     chain = _build_rag_chain({}, chain_filters, conversation_id=conversation_id)
 
-    async def event_stream() -> AsyncIterator[str]:
-        result = chain.invoke({"question": req.message})
-        answer = result["answer"]
-        sources = _format_sources(result.get("source_documents", []))
-        trace_id = result.get("trace_id", "")
-        followups = result.get("followup_questions", [])
+    # Root span for the RAG request
+    tracer = otel_trace.get_tracer(__name__)
+    with tracer.start_as_current_span("rag_request") as root_span:
+        # TODO: wire from auth context (Stage 4+)
+        root_span.set_attribute("user.id", "anonymous")
+        root_span.set_attribute("conversation.id", conversation_id)
+        root_span.set_attribute("query.length", len(req.message))
 
-        # Persist user message
-        add_user_message(conversation_id, req.message, trace_id=trace_id)
+        async def event_stream() -> AsyncIterator[str]:
+            result = chain.invoke({"question": req.message})
+            answer = result["answer"]
+            sources = _format_sources(result.get("source_documents", []))
+            # Extract real trace_id from OTel context
+            trace_id = _get_otel_trace_id(result.get("trace_id", ""))
+            followups = result.get("followup_questions", [])
 
-        # Persist assistant response with safety metadata
-        metadata = {}
-        if result.get("safety_response"):
-            sr = result["safety_response"]
-            metadata = {
-                "fallback_triggered": sr.fallback_triggered,
-                "grounded": sr.grounded,
-                "citations_valid": sr.citations_valid,
-            }
-        add_assistant_message(conversation_id, answer, metadata=metadata, trace_id=trace_id)
+            # Persist user message
+            add_user_message(conversation_id, req.message, trace_id=trace_id)
 
-        # Persist QueryCost (best-effort)
-        try:
-            await record_query_cost(
-                db=db,
-                user_id="anonymous",
-                conversation_id=conversation_id,
-                trace_id=trace_id,
-                model=result.get("model", ""),
-                input_tokens=int(result.get("input_tokens", 0)),
-                output_tokens=int(result.get("output_tokens", 0)),
-                cost_usd=float(result.get("cost_usd", 0.0)),
-            )
-        except Exception:
-            pass
+            # Persist assistant response with safety metadata
+            metadata = {}
+            if result.get("safety_response"):
+                sr = result["safety_response"]
+                metadata = {
+                    "fallback_triggered": sr.fallback_triggered,
+                    "grounded": sr.grounded,
+                    "citations_valid": sr.citations_valid,
+                }
+            add_assistant_message(conversation_id, answer, metadata=metadata, trace_id=trace_id)
 
-        # Stream answer
-        yield f"data: {json.dumps({'type': 'answer', 'content': answer})}\n\n"
-        # Stream sources
-        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
-        # Stream trace_id
-        yield f"data: {json.dumps({'type': 'trace_id', 'trace_id': trace_id})}\n\n"
-        # Stream follow-up questions
-        if followups:
-            yield f"data: {json.dumps({'type': 'followup_questions', 'questions': followups})}\n\n"
-        # Stream performance/cost metadata
-        yield f"data: {json.dumps({'type': 'performance', 'cache_hit': bool(result.get('cache_hit', False)), 'model': result.get('model'), 'input_tokens': int(result.get('input_tokens', 0)), 'output_tokens': int(result.get('output_tokens', 0)), 'cost_usd': float(result.get('cost_usd', 0.0))})}\n\n"
-        # Done
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            # Persist QueryCost (best-effort)
+            try:
+                await record_query_cost(
+                    db=db,
+                    user_id="anonymous",
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    model=result.get("model", ""),
+                    input_tokens=int(result.get("input_tokens", 0)),
+                    output_tokens=int(result.get("output_tokens", 0)),
+                    cost_usd=float(result.get("cost_usd", 0.0)),
+                )
+            except Exception:
+                pass
+
+            # Stream answer
+            yield f"data: {json.dumps({'type': 'answer', 'content': answer})}\n\n"
+            # Stream sources
+            yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+            # Stream trace_id
+            yield f"data: {json.dumps({'type': 'trace_id', 'trace_id': trace_id})}\n\n"
+            # Stream follow-up questions
+            if followups:
+                yield f"data: {json.dumps({'type': 'followup_questions', 'questions': followups})}\n\n"
+            # Stream performance/cost metadata
+            yield f"data: {json.dumps({'type': 'performance', 'cache_hit': bool(result.get('cache_hit', False)), 'model': result.get('model'), 'input_tokens': int(result.get('input_tokens', 0)), 'output_tokens': int(result.get('output_tokens', 0)), 'cost_usd': float(result.get('cost_usd', 0.0))})}\n\n"
+            # Done
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -256,56 +275,66 @@ async def query(req: QueryRequest, db: AsyncSession = Depends(get_db)):
     """
     conversation_id = _ensure_conversation_id(req.conversation_id)
 
-    chain_settings = req.settings.model_dump(exclude_none=True) if req.settings else {}
-    chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
+    # Root span for the RAG request
+    tracer = otel_trace.get_tracer(__name__)
+    with tracer.start_as_current_span("rag_request") as root_span:
+        # TODO: wire from auth context (Stage 4+)
+        root_span.set_attribute("user.id", "anonymous")
+        root_span.set_attribute("conversation.id", conversation_id)
+        root_span.set_attribute("query.length", len(req.question))
 
-    chain = _build_rag_chain(chain_settings, chain_filters, conversation_id=conversation_id)
-    result = chain.invoke({"question": req.question})
+        chain_settings = req.settings.model_dump(exclude_none=True) if req.settings else {}
+        chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
 
-    safety_response = result.get("safety_response")
+        chain = _build_rag_chain(chain_settings, chain_filters, conversation_id=conversation_id)
+        result = chain.invoke({"question": req.question})
 
-    # Persist messages (fire-and-forget in query mode)
-    trace_id = result.get("trace_id", "")
-    try:
-        add_user_message(conversation_id, req.question, trace_id=trace_id)
-        metadata = {}
-        if safety_response:
-            metadata = {
-                "fallback_triggered": safety_response.fallback_triggered,
-                "grounded": safety_response.grounded,
-                "citations_valid": safety_response.citations_valid,
-            }
-        add_assistant_message(conversation_id, result["answer"], metadata=metadata, trace_id=trace_id)
-    except Exception:
-        pass  # Non-fatal in query mode
+        safety_response = result.get("safety_response")
 
-    # Persist QueryCost (best-effort)
-    try:
-        await record_query_cost(
-            db=db,
-            user_id="anonymous",
+        # Extract real trace_id from OTel context
+        trace_id = _get_otel_trace_id(result.get("trace_id", ""))
+
+        # Persist messages (fire-and-forget in query mode)
+        try:
+            add_user_message(conversation_id, req.question, trace_id=trace_id)
+            metadata = {}
+            if safety_response:
+                metadata = {
+                    "fallback_triggered": safety_response.fallback_triggered,
+                    "grounded": safety_response.grounded,
+                    "citations_valid": safety_response.citations_valid,
+                }
+            add_assistant_message(conversation_id, result["answer"], metadata=metadata, trace_id=trace_id)
+        except Exception:
+            pass  # Non-fatal in query mode
+
+        # Persist QueryCost (best-effort)
+        try:
+            await record_query_cost(
+                db=db,
+                user_id="anonymous",
+                conversation_id=conversation_id,
+                trace_id=trace_id,
+                model=result.get("model", ""),
+                input_tokens=int(result.get("input_tokens", 0)),
+                output_tokens=int(result.get("output_tokens", 0)),
+                cost_usd=float(result.get("cost_usd", 0.0)),
+            )
+        except Exception:
+            pass
+
+        return QueryResponse(
+            answer=result["answer"],
+            sources=_format_sources(result.get("source_documents", [])),
             conversation_id=conversation_id,
             trace_id=trace_id,
-            model=result.get("model", ""),
+            fallback_triggered=result.get("fallback_triggered", False),
+            grounded=safety_response.grounded if safety_response else None,
+            citations_valid=safety_response.citations_valid if safety_response else None,
+            followup_questions=result.get("followup_questions", []),
+            cache_hit=bool(result.get("cache_hit", False)),
+            model=result.get("model"),
             input_tokens=int(result.get("input_tokens", 0)),
             output_tokens=int(result.get("output_tokens", 0)),
             cost_usd=float(result.get("cost_usd", 0.0)),
         )
-    except Exception:
-        pass
-
-    return QueryResponse(
-        answer=result["answer"],
-        sources=_format_sources(result.get("source_documents", [])),
-        conversation_id=conversation_id,
-        trace_id=trace_id,
-        fallback_triggered=result.get("fallback_triggered", False),
-        grounded=safety_response.grounded if safety_response else None,
-        citations_valid=safety_response.citations_valid if safety_response else None,
-        followup_questions=result.get("followup_questions", []),
-        cache_hit=bool(result.get("cache_hit", False)),
-        model=result.get("model"),
-        input_tokens=int(result.get("input_tokens", 0)),
-        output_tokens=int(result.get("output_tokens", 0)),
-        cost_usd=float(result.get("cost_usd", 0.0)),
-    )

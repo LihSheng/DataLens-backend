@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from typing import Any, Dict, List, Optional, Tuple
+
+from opentelemetry import trace as otel_trace
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -77,7 +78,12 @@ class RAGChain:
         self.conversation_history_limit = conversation_history_limit
         self.enable_memory = enable_memory
         self.enable_followup = enable_followup
-        self.trace_id = trace_id or str(uuid.uuid4())
+        # Extract trace_id from OTel context if not provided
+        if trace_id:
+            self.trace_id = trace_id
+        else:
+            ctx = otel_trace.get_current_span().get_span_context()
+            self.trace_id = format(ctx.trace_id, "032x") if ctx.is_valid else ""
 
         self._retriever = None
         self._reranker = None

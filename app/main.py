@@ -1,6 +1,8 @@
 """
 FastAPI app entrypoint for MVP FE/BE integration.
 """
+import logging
+logger = logging.getLogger(__name__)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,6 +10,13 @@ from app.api.auth import router as auth_router
 from app.api.mvp import router as mvp_router
 from app.config import settings
 from app.db.session import create_tables
+
+# OTel / Phoenix instrumentation
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry import trace as otel_trace
+from openinference.instrumentation.langchain import LangChainInstrumentor
 from app.models import user as _user_model  # noqa: F401
 from app.models import conversation as _conversation_model  # noqa: F401
 from app.models import document as _document_model  # noqa: F401
@@ -44,6 +53,19 @@ def health():
 @app.on_event("startup")
 async def on_startup():
     await create_tables()
+
+    # Register OTel tracer with Phoenix collector
+    resource = Resource(attributes={"service.name": "rag-backend"})
+    provider = TracerProvider(resource=resource)
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        exporter = OTLPSpanExporter(endpoint=settings.phoenix_collector_endpoint)
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+    except Exception as e:
+        logger.warning(f"OTel: Phoenix exporter unavailable, traces will not be exported. Error: {e}")
+    from opentelemetry.trace import set_tracer_provider
+    set_tracer_provider(provider)
+    LangChainInstrumentor().instrument(tracer_provider=provider)
 
 
 if __name__ == "__main__":
