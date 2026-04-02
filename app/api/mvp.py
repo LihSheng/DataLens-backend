@@ -10,6 +10,7 @@ Scope:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import os
@@ -18,6 +19,8 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
+
+from opentelemetry import trace as otel_trace
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
@@ -28,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.chains.rag_chain import RAGChain
+from app.services.phoenix_annotations import run_live_ragas_eval, submit_feedback
 from app.config import settings
 from app.db.session import get_db
 from app.dependencies import get_current_user
@@ -415,112 +419,124 @@ async def chat(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not payload.message.strip():
-        raise HTTPException(status_code=400, detail="message is required")
+    tracer = otel_trace.get_tracer(__name__)
+    with tracer.start_as_current_span("rag_request"):
+            if not payload.message.strip():
+                raise HTTPException(status_code=400, detail="message is required")
 
-    conversation_id = payload.conversation_id
-    if not conversation_id or conversation_id == "conv_new":
-        conv = Conversation(user_id=current_user.id, title="New conversation")
-        db.add(conv)
-        await db.commit()
-        await db.refresh(conv)
-        conversation_id = conv.id
-    else:
-        conv = await _ensure_conversation_owned(db, conversation_id, current_user.id)
+            conversation_id = payload.conversation_id
+            if not conversation_id or conversation_id == "conv_new":
+                conv = Conversation(user_id=current_user.id, title="New conversation")
+                db.add(conv)
+                await db.commit()
+                await db.refresh(conv)
+                conversation_id = conv.id
+            else:
+                conv = await _ensure_conversation_owned(db, conversation_id, current_user.id)
 
-    user_message = Message(
-        conversation_id=conversation_id,
-        role="user",
-        content=payload.message,
-        metadata_json=None,
-    )
-    db.add(user_message)
-    await db.commit()
+            user_message = Message(
+                conversation_id=conversation_id,
+                role="user",
+                content=payload.message,
+                metadata_json=None,
+            )
+            db.add(user_message)
+            await db.commit()
 
-    answer = ""
-    source_docs: list[Any] = []
-    followups: list[str] = []
-    cache_hit = False
-    routed_model = None
-    input_tokens = 0
-    output_tokens = 0
-    try:
-        chain_filters = payload.filters.model_dump(exclude_none=True) if payload.filters else {}
-        chain = RAGChain(
-            settings={
-                "query_expansion": False,
-                "hyde": False,
-                "reranker": False,
-                "context_max_tokens": 1800,
-            },
-            filters=chain_filters,
-            conversation_id=conversation_id,
-        )
-        result = chain.invoke({"question": payload.message})
-        answer = str(result.get("answer", "")).strip()
-        source_docs = result.get("source_documents", []) or []
-        followups = result.get("followup_questions", []) or []
-        cache_hit = bool(result.get("cache_hit", False))
-        routed_model = result.get("model")
-        input_tokens = int(result.get("input_tokens", 0))
-        output_tokens = int(result.get("output_tokens", 0))
-    except Exception:
-        answer = (
-            "I couldn't complete model inference right now. "
-            "Please verify model credentials and try again."
-        )
+            answer = ""
+            source_docs: list[Any] = []
+            followups: list[str] = []
+            cache_hit = False
+            routed_model = None
+            input_tokens = 0
+            output_tokens = 0
+            try:
+                chain_filters = payload.filters.model_dump(exclude_none=True) if payload.filters else {}
+                chain = RAGChain(
+                    settings={
+                        "query_expansion": False,
+                        "hyde": False,
+                        "reranker": False,
+                        "context_max_tokens": 1800,
+                    },
+                    filters=chain_filters,
+                    conversation_id=conversation_id,
+                )
+                result = chain.invoke({"question": payload.message})
+                answer = str(result.get("answer", "")).strip()
+                source_docs = result.get("source_documents", []) or []
+                followups = result.get("followup_questions", []) or []
+                cache_hit = bool(result.get("cache_hit", False))
+                routed_model = result.get("model")
+                input_tokens = int(result.get("input_tokens", 0))
+                output_tokens = int(result.get("output_tokens", 0))
+            except Exception:
+                answer = (
+                    "I couldn't complete model inference right now. "
+                    "Please verify model credentials and try again."
+                )
 
-    if not answer:
-        answer = "I couldn't find enough context to answer confidently."
+            if not answer:
+                answer = "I couldn't find enough context to answer confidently."
 
-    sources = [_build_source(doc, i) for i, doc in enumerate(source_docs)]
-    token_usage = {
-        "used": max(0, input_tokens),
-        "available": int((await _get_or_create_settings(db, current_user.id)).get("maxTokens", 2048)),
-        "chunksIncluded": len(sources),
-        "chunksAvailable": len(sources),
-    }
+            sources = [_build_source(doc, i) for i, doc in enumerate(source_docs)]
+            token_usage = {
+                "used": max(0, input_tokens),
+                "available": int((await _get_or_create_settings(db, current_user.id)).get("maxTokens", 2048)),
+                "chunksIncluded": len(sources),
+                "chunksAvailable": len(sources),
+            }
 
-    assistant_meta = {
-        "sources": sources,
-        "suggestedFollowups": followups[:3],
-        "confidence": "high" if sources else "low",
-        "cacheHit": cache_hit,
-        "routedToModel": routed_model,
-        "latencyMs": 0,
-        "tokenUsage": token_usage,
-    }
-    assistant_message = Message(
-        conversation_id=conversation_id,
-        role="assistant",
-        content=answer,
-        metadata_json=json.dumps(assistant_meta),
-    )
-    db.add(assistant_message)
-    conv.updated_at = datetime.utcnow()
-    await db.commit()
+            assistant_meta = {
+                "sources": sources,
+                "suggestedFollowups": followups[:3],
+                "confidence": "high" if sources else "low",
+                "cacheHit": cache_hit,
+                "routedToModel": routed_model,
+                "latencyMs": 0,
+                "tokenUsage": token_usage,
+            }
+            assistant_message = Message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=answer,
+                metadata_json=json.dumps(assistant_meta),
+            )
+            db.add(assistant_message)
+            conv.updated_at = datetime.utcnow()
+            await db.commit()
 
-    async def event_stream():
-        yield f"data: {json.dumps({'content': answer}, ensure_ascii=False)}\n\n"
-        if sources:
-            yield f"data: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
-        meta_payload: dict[str, Any] = {
-            "conversationId": conversation_id,
-            "tokenUsage": token_usage,
-            "cacheHit": cache_hit,
-        }
-        if followups:
-            meta_payload["suggestedFollowups"] = followups[:3]
-        if routed_model:
-            meta_payload["routedToModel"] = routed_model
-        yield f"data: {json.dumps(meta_payload, ensure_ascii=False)}\n\n"
-        yield "data: {}\n\n"
+            # Fire-and-forget RAGAS eval + Phoenix annotation after db commit
+            asyncio.create_task(
+                run_live_ragas_eval(
+                    question=payload.message,
+                    answer=answer,
+                    source_docs=source_docs,
+                    trace_id=conversation_id,
+                )
+            )
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+            async def event_stream():
+                yield f"data: {json.dumps({'content': answer}, ensure_ascii=False)}\n\n"
+                if sources:
+                    yield f"data: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
+                meta_payload: dict[str, Any] = {
+                    "conversationId": conversation_id,
+                    "tokenUsage": token_usage,
+                    "cacheHit": cache_hit,
+                }
+                if followups:
+                    meta_payload["suggestedFollowups"] = followups[:3]
+                if routed_model:
+                    meta_payload["routedToModel"] = routed_model
+                yield f"data: {json.dumps(meta_payload, ensure_ascii=False)}\n\n"
+                yield "data: {}\n\n"
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
 
 @router.get("/documents")
@@ -906,24 +922,35 @@ async def submit_feedback(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    vote = "positive" if payload.rating == "positive" else "negative"
-    try:
-        message_uuid = uuid.UUID(payload.message_id)
-        user_uuid = uuid.UUID(current_user.id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="messageId and userId must be UUIDs")
+    tracer = otel_trace.get_tracer(__name__)
+    with tracer.start_as_current_span("feedback_submit"):
+        vote = "positive" if payload.rating == "positive" else "negative"
+        try:
+            message_uuid = uuid.UUID(payload.message_id)
+            user_uuid = uuid.UUID(current_user.id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="messageId and userId must be UUIDs")
 
-    feedback = Feedback(
-        message_id=message_uuid,
-        user_id=user_uuid,
-        vote=vote,
-        rating=5 if vote == "positive" else 1,
-        comment=payload.comment,
-        metadata_json=json.dumps({"traceId": payload.trace_id, "conversationId": payload.conversation_id}),
-    )
-    db.add(feedback)
-    await db.commit()
-    await db.refresh(feedback)
+        feedback = Feedback(
+            message_id=message_uuid,
+            user_id=user_uuid,
+            vote=vote,
+            rating=5 if vote == "positive" else 1,
+            comment=payload.comment,
+            metadata_json=json.dumps({"traceId": payload.trace_id, "conversationId": payload.conversation_id}),
+        )
+        db.add(feedback)
+        await db.commit()
+        await db.refresh(feedback)
+        # Fire-and-forget Phoenix human-feedback annotation
+        asyncio.create_task(
+            submit_feedback(
+                trace_id=payload.trace_id or payload.conversation_id or "",
+                span_id=None,
+                label=vote,
+            )
+        )
+
     return {
         "id": str(feedback.id),
         "messageId": str(feedback.message_id),
