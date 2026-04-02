@@ -9,7 +9,7 @@ Matches frontend expectations:
 - POST /api/query — plain JSON, accepts { question, conversationId?, k, settings?, filters? }
 """
 import uuid
-from typing import List, Optional, AsyncIterator
+from typing import Any, Dict, List, Optional, AsyncIterator
 
 import json
 
@@ -99,6 +99,7 @@ class ChatResponse(BaseModel):
     conversation_id: str
     trace_id: str
     followup_questions: List[str] = []
+    trace_metadata: Optional[Dict[str, Any]] = None
 
 
 class QueryResponse(BaseModel):
@@ -115,6 +116,7 @@ class QueryResponse(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    trace_metadata: Optional[Dict[str, Any]] = None
 
 
 # ─────────────────────────────────────────────────────────
@@ -254,6 +256,14 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
                 yield f"data: {json.dumps({'type': 'followup_questions', 'questions': followups})}\n\n"
             # Stream performance/cost metadata
             yield f"data: {json.dumps({'type': 'performance', 'cache_hit': bool(result.get('cache_hit', False)), 'model': result.get('model'), 'input_tokens': int(result.get('input_tokens', 0)), 'output_tokens': int(result.get('output_tokens', 0)), 'cost_usd': float(result.get('cost_usd', 0.0))})}\n\n"
+            # Stream trace metadata (Stage 5)
+            meta = {
+                'traceId': trace_id,
+                'tokens': int(result.get('input_tokens', 0)) + int(result.get('output_tokens', 0)),
+                'retrievedChunks': len(result.get('source_documents', [])),
+                'usedChunks': len(result.get('source_documents', [])),
+            }
+            yield f"data: {json.dumps({'type': 'trace_metadata', 'metadata': meta})}\n\n"
             # Done
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -337,4 +347,10 @@ async def query(req: QueryRequest, db: AsyncSession = Depends(get_db)):
             input_tokens=int(result.get("input_tokens", 0)),
             output_tokens=int(result.get("output_tokens", 0)),
             cost_usd=float(result.get("cost_usd", 0.0)),
+            trace_metadata={
+                "traceId": trace_id,
+                "tokens": int(result.get("input_tokens", 0)) + int(result.get("output_tokens", 0)),
+                "retrievedChunks": len(result.get("source_documents", [])),
+                "usedChunks": len(result.get("source_documents", [])),
+            },
         )
