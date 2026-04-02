@@ -80,7 +80,11 @@ class Reranker:
         pairs = [[query, doc.page_content] for doc in documents]
         scores = model.predict(pairs)
         scored = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in scored[:top_n]]
+        results = []
+        for score, doc in scored[:top_n]:
+            doc.metadata["reranker_score"] = float(score)
+            results.append(doc)
+        return results
 
     def _rerank_cohere(
         self,

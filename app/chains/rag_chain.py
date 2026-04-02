@@ -29,6 +29,8 @@ from app.services.vectorstore_service import get_llm, get_vectorstore
 
 logger = logging.getLogger(__name__)
 
+tracer = otel_trace.get_tracer(__name__)
+
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful AI assistant answering questions based on the provided context.\n"
     "If the context does not contain enough information to answer the question, say so clearly.\n"
@@ -190,35 +192,56 @@ class RAGChain:
         use_expansion = self.settings.get("query_expansion", False)
         use_hyde = self.settings.get("hyde", False)
 
-        queries = [query]
-        if use_expansion:
-            queries = self._get_query_expander().expand(query)
+        with tracer.start_as_current_span("retrieval") as span:
+            span.set_attribute("retrieval.raw_chunks", 0)
+            span.set_attribute("retrieval.filters_applied", bool(self.filters))
+            span.set_attribute("retrieval.query_expansion", use_expansion)
+            span.set_attribute("retrieval.hyde", use_hyde)
 
-        all_docs: List[Document] = []
-        vs = self._get_vectorstore()
-        for q in queries:
-            if use_hyde:
-                docs = self._get_hyde()(q, vs, k=self.k)
-            else:
-                docs = self._build_retriever().invoke(q, k=self.k)
-            all_docs.extend(docs)
+            queries = [query]
+            if use_expansion:
+                queries = self._get_query_expander().expand(query)
 
-        seen = set()
-        unique_docs = []
-        for doc in all_docs:
-            key = doc.page_content[:120]
-            if key not in seen:
-                seen.add(key)
-                unique_docs.append(doc)
+            all_docs: List[Document] = []
+            vs = self._get_vectorstore()
+            for q in queries:
+                if use_hyde:
+                    docs = self._get_hyde()(q, vs, k=self.k)
+                else:
+                    docs = self._build_retriever().invoke(q, k=self.k)
+                all_docs.extend(docs)
 
-        if self.filters:
-            unique_docs = apply_filters(unique_docs, **self.filters)
-        return unique_docs
+            seen = set()
+            unique_docs = []
+            for doc in all_docs:
+                key = doc.page_content[:120]
+                if key not in seen:
+                    seen.add(key)
+                    unique_docs.append(doc)
+
+            if self.filters:
+                unique_docs = apply_filters(unique_docs, **self.filters)
+
+            span.set_attribute("retrieval.raw_chunks", len(unique_docs))
+            return unique_docs
 
     def _rerank(self, query: str, docs: List[Document]) -> List[Document]:
-        if not self.settings.get("reranker", False):
-            return docs[: self.rerank_top_n]
-        return self._get_reranker().rerank(query, docs, top_n=self.rerank_top_n)
+        with tracer.start_as_current_span("cross_encoder_rerank") as span:
+            span.set_attribute("reranker.input_docs", len(docs))
+            if not self.settings.get("reranker", False):
+                span.set_attribute("reranker.model", "disabled")
+                span.set_attribute("reranker.output_docs", len(docs[: self.rerank_top_n]))
+                return docs[: self.rerank_top_n]
+
+            reranker = self._get_reranker()
+            span.set_attribute("reranker.model", getattr(reranker, "model_name", "unknown"))
+            output_docs = reranker.rerank(query, docs, top_n=self.rerank_top_n)
+            span.set_attribute("reranker.output_docs", len(output_docs))
+            if output_docs:
+                top_score = output_docs[0].metadata.get("reranker_score")
+                if top_score is not None:
+                    span.set_attribute("reranker.top_score", top_score)
+            return output_docs
 
     # ------------------------------------------------------------------
     # Stage 5 helpers
@@ -310,11 +333,18 @@ class RAGChain:
 
         docs = self._retrieve(question)
         reranked = self._rerank(question, docs)
-        assembly = self._get_context_assembler().assemble(
-            reranked,
-            question=question,
-            max_context_tokens=self.settings.get("context_max_tokens"),
-        )
+        with tracer.start_as_current_span("context_assembly") as span:
+            assembly = self._get_context_assembler().assemble(
+                reranked,
+                question=question,
+                max_context_tokens=self.settings.get("context_max_tokens"),
+            )
+            span.set_attribute("context.chunks_used", len(assembly.selected_docs))
+            span.set_attribute("context.tokens_used", assembly.context_tokens)
+            span.set_attribute(
+                "context.token_budget",
+                self.settings.get("context_max_tokens") or 1800,
+            )
 
         route = self._get_model_router().route(
             question=question,
