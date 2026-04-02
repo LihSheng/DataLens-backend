@@ -13,6 +13,8 @@ services:
       - postgres
       - redis
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - datalens
 
   worker:
     build: .
@@ -21,6 +23,8 @@ services:
       - postgres
       - redis
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    networks:
+      - datalens
 
   postgres:
     image: postgres:16
@@ -29,23 +33,48 @@ services:
       POSTGRES_PASSWORD: ragpass
       POSTGRES_DB: ragdb
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - datalens
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - datalens
 
+  # ─── Phoenix — internal only, no direct host exposure ───────────────────
+  # Access via Cloudflare Zero Trust tunnel (see DEPLOY.md)
   phoenix:
     image: arizephoenix/phoenix:latest
     ports:
-      - "6006:6006"
+      - "127.0.0.1:6006:6006"   # localhost-only; not exposed to the internet
     volumes:
       - phoenix_data:/data
+    networks:
+      - datalens
+
+  # ─── Cloudflare Zero Trust Tunnel (optional) ───────────────────────────
+  # Uncomment and set CLOUDFLARED_TOKEN to expose Phoenix externally via
+  # Cloudflare Access (requires a ZT account at dash.cloudflare.com).
+  # With this running, Phoenix is accessible at your CF tunnel subdomain
+  # with identity providers (Google, GitHub, etc.) gating access.
+  #
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+  #   restart: unless-stopped
+  #   networks:
+  #     - datalens
+
+networks:
+  datalens:
+    driver: bridge
 
 volumes:
   postgres_data:
