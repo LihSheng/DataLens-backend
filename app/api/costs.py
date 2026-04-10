@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.audit import QueryCost
 
-router = APIRouter()
+router = APIRouter(prefix="/api")
 
 
 class CostRow(BaseModel):

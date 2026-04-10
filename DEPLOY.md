@@ -70,11 +70,11 @@ Ensure these are set in your `.env`:
 
 ```env
 # Phoenix OTel collector
-PHOENIX_BASE_URL=http://phoenix:6000
-PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6000/v1/traces
+PHOENIX_BASE_URL=http://phoenix:6006
+PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
 
 # OTel export
-OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6000
+OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006
 ```
 
 ---

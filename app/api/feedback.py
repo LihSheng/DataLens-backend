@@ -13,7 +13,7 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -157,4 +157,48 @@ async def get_feedback_for_conversation(
     return FeedbackListResponse(
         items=[_feedback_to_response(fb) for fb in rows],
         total=len(rows),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# Observability stats — called by the observability UI
+# ─────────────────────────────────────────────────────────
+
+class FeedbackStatsResponse(BaseModel):
+    total: int
+    positive: int
+    negative: int
+    positiveRatio: float
+    negativeRatio: float
+
+
+@router.get("/stats", response_model=FeedbackStatsResponse)
+async def get_feedback_stats(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Aggregate feedback counts across all messages.
+    Returns total, positive, negative, and ratios.
+    """
+    result = await db.execute(
+        select(Feedback.vote, func.count(Feedback.id))
+        .group_by(Feedback.vote)
+    )
+    rows = result.all()
+
+    counts: dict[str, int] = {"positive": 0, "negative": 0}
+    for vote, count in rows:
+        if vote in counts:
+            counts[vote] = count
+
+    total = counts["positive"] + counts["negative"]
+    positive_ratio = counts["positive"] / total if total > 0 else 0.0
+    negative_ratio = counts["negative"] / total if total > 0 else 0.0
+
+    return FeedbackStatsResponse(
+        total=total,
+        positive=counts["positive"],
+        negative=counts["negative"],
+        positiveRatio=round(positive_ratio, 4),
+        negativeRatio=round(negative_ratio, 4),
     )

@@ -57,7 +57,7 @@ async def list_traces(
     """
     Proxy GET /api/phoenix/traces?limit=100&offset=0
     """
-    return await _get("/api/traces", params={"limit": limit, "offset": offset})
+    return await _get("/v1/traces", params={"limit": limit, "offset": offset})
 
 
 @router.get("/traces/{trace_id}")
@@ -68,7 +68,7 @@ async def get_trace(
     """
     Proxy GET /api/phoenix/traces/{trace_id}
     """
-    return await _get(f"/api/traces/{trace_id}")
+    return await _get(f"/v1/traces/{trace_id}")
 
 
 @router.get("/spans")
@@ -79,7 +79,7 @@ async def list_spans(
     """
     Proxy GET /api/phoenix/spans?trace_id={trace_id}
     """
-    return await _get("/api/spans", params={"trace_id": trace_id})
+    return await _get("/v1/spans", params={"trace_id": trace_id})
 
 
 @router.get("/evaluations")
@@ -90,7 +90,7 @@ async def list_evaluations(
     """
     Proxy GET /api/phoenix/evaluations?trace_id={trace_id}
     """
-    return await _get("/api/evaluations", params={"trace_id": trace_id})
+    return await _get("/v1/evaluations", params={"trace_id": trace_id})
 
 
 @router.get("/summary")
@@ -100,4 +100,4 @@ async def get_summary(
     """
     Proxy GET /api/phoenix/summary
     """
-    return await _get("/api/summary")
+    return await _get("/v1/summary")

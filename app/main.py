@@ -9,6 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import router as auth_router
 from app.api.mvp import router as mvp_router
 from app.api.phoenix_proxy import router as phoenix_proxy_router
+from app.api.audit import router as audit_router
+from app.api.feedback import router as feedback_router
+from app.api.evaluation import router as evaluation_router
+from app.api.costs import router as costs_router
 from app.config import settings
 from app.db.session import create_tables
 
@@ -38,6 +42,10 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(mvp_router, prefix="/api", tags=["mvp"])
 app.include_router(phoenix_proxy_router, prefix="/api", tags=["phoenix"])
+app.include_router(audit_router, prefix="/api", tags=["admin"])
+app.include_router(feedback_router, prefix="/api", tags=["feedback"])
+app.include_router(evaluation_router, tags=["evaluation"])
+app.include_router(costs_router, tags=["costs"])
 
 
 @app.get("/health")
