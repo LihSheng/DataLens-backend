@@ -360,6 +360,11 @@ class RAGChain:
         payload = {"question": question, "context": assembly.context}
         if include_history:
             payload["conversation_history"] = history
+
+        # DEBUG: log the full prompt sent to LLM
+        rendered_prompt = prompt.invoke(payload)
+        print(f"[LLM PROMPT] {rendered_prompt.to_string()}")
+
         answer = chain.invoke(payload)
 
         input_tokens, output_tokens = self._compute_prompt_tokens(

@@ -7,9 +7,8 @@ import logging
 from typing import List, Optional
 
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from langchain_community.vectorstores import Milvus, FAISS
+from langchain_community.vectorstores import Milvus, FAISS, Chroma
 from langchain_core.documents import Document
-from langchain_classic.chains import RetrievalQA
 
 from app.config import (
     USE_PROVIDER,
@@ -22,6 +21,7 @@ from app.config import (
     MILVUS_HOST,
     MILVUS_PORT,
     MILVUS_COLLECTION,
+    CHROMA_PERSIST_PATH,
 )
 
 # --- Embeddings (shared singleton) ---
@@ -33,7 +33,7 @@ embeddings = HuggingFaceBgeEmbeddings(
 
 # --- Global state (same as original main.py) ---
 _vectorstore: Optional[object] = None
-_qa_chain: Optional[object] = None
+# _qa_chain: Optional[object] = None  # TODO: disabled - depends on langchain_classic
 
 
 def get_vectorstore():
@@ -52,6 +52,18 @@ def get_vectorstore():
             return _vectorstore
         except Exception as e:
             print(f"Milvus connection failed: {e}, falling back to in-memory")
+
+    if VECTORSTORE_TYPE == "chroma":
+        # Chroma with persistent storage + BM25 hybrid
+        _vectorstore = Chroma.from_texts(
+            texts=["initial placeholder"],
+            embedding=embeddings,
+            persist_directory=CHROMA_PERSIST_PATH,
+        )
+        _vectorstore._bm25_texts = []
+        _vectorstore._bm25_metadata = []
+        _vectorstore._bm25 = None
+        return _vectorstore
 
     # In-memory FAISS
     _vectorstore = FAISS.from_texts(["initial placeholder"], embeddings)
@@ -83,18 +95,18 @@ def get_llm(model_name: Optional[str] = None, temperature: float = 0.7):
         )
 
 
-def build_qa_chain():
-    """Builds (or returns cached) the RetrievalQA chain."""
-    global _qa_chain
-    vs = get_vectorstore()
-    llm = get_llm()
-
-    _qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vs.as_retriever(search_kwargs={"k": 4}),
-    )
-    return _qa_chain
+# def build_qa_chain():
+#     """Builds (or returns cached) the RetrievalQA chain."""
+#     global _qa_chain
+#     vs = get_vectorstore()
+#     llm = get_llm()
+#
+#     _qa_chain = RetrievalQA.from_chain_type(
+#         llm=llm,
+#         chain_type="stuff",
+#         retriever=vs.as_retriever(search_kwargs={"k": 4}),
+#     )
+#     return _qa_chain
 
 
 def add_documents_with_bm25(
@@ -103,7 +115,7 @@ def add_documents_with_bm25(
     metadatas: List[dict] = None,
 ) -> None:
     """
-    Add documents to both the FAISS vector store and the in-memory BM25 index.
+    Add documents to the vector store and the in-memory BM25 index.
 
     This enables hybrid retrieval (dense + sparse) after documents are ingested.
 
@@ -126,8 +138,12 @@ def add_documents_with_bm25(
     texts = texts or [c.page_content for c in chunks]
     metadatas = metadatas or [c.metadata for c in chunks]
 
-    # Add to FAISS
-    vs.add_documents(chunks)
+    # Add to vector store (Chroma uses add_texts, FAISS uses add_documents)
+    if VECTORSTORE_TYPE == "chroma":
+        vs.add_texts(texts=texts, metadatas=metadatas)
+        vs.persist()
+    else:
+        vs.add_documents(chunks)
 
     # Extend BM25 index
     vs._bm25_texts.extend(texts)

@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from app.workers.celery_app import celery_app
 from app.config import settings
 
+# Import all models to ensure FK relationships are resolved by SQLAlchemy
+from app.models import user as _user_model  # noqa: F401
+from app.models import document as _document_model  # noqa: F401
+from app.models import conversation as _conversation_model  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 # ── Async DB session factory (for Celery workers) ─────────────────────────────

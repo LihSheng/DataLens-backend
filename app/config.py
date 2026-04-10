@@ -129,3 +129,4 @@ VECTORSTORE_TYPE = settings.vectorstore_type
 MILVUS_HOST = settings.milvus_host
 MILVUS_PORT = settings.milvus_port
 MILVUS_COLLECTION = settings.milvus_collection
+CHROMA_PERSIST_PATH = settings.chroma_persist_path

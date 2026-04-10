@@ -11,6 +11,8 @@ Scope:
 from __future__ import annotations
 
 import asyncio
+import logging
+logger = logging.getLogger(__name__)
 import json
 import mimetypes
 import os
@@ -615,6 +617,28 @@ async def upload_document(
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
+
+    # Dispatch Celery ingest task
+    try:
+        from app.workers.ingestion_worker import process_document
+
+        process_document.delay(
+            file_path=str(out_path),
+            user_id=current_user.id,
+            document_id=doc.id,
+            options={
+                "chunk_strategy": "recursive",
+                "chunk_size": 1000,
+                "chunk_overlap": 200,
+                "redact_pii": False,
+                "use_presidio": False,
+                "enable_semantic": False,
+            },
+        )
+        logger.info(f"[API] Queued document {doc.id} for processing")
+    except Exception as e:
+        logger.exception(f"[API] Failed to dispatch Celery task: {e}")
+
     return _serialise_document(doc, restricted=False)
 
 
