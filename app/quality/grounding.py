@@ -28,8 +28,8 @@ DEFAULT_GROUNDING_PROMPT = ChatPromptTemplate.from_messages([
         "If the answer says 'I don't know' or 'not enough context' and the documents "
         "also don't contain the information, that is valid — score it 1.0.\n"
         "Respond ONLY with a valid JSON object: "
-        '{"claims": [{"text": "...", "supported": true/false, "score": 0.0-1.0, "reason": "..."}], '
-        '"overall_score": 0.0-1.0, "verdict": "grounded|partial|ungrounded"}',
+        '{{"claims": [{{"text": "...", "supported": true/false, "score": 0.0-1.0, "reason": "..."}}], '
+        '"overall_score": 0.0-1.0, "verdict": "grounded|partial|ungrounded"}}',
     ),
     (
         "human",

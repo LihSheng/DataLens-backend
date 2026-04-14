@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
+from app.api.admin_users import router as admin_users_router
 from app.api.mvp import router as mvp_router
 from app.api.phoenix_proxy import router as phoenix_proxy_router
 from app.api.audit import router as audit_router
@@ -23,6 +24,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry import trace as otel_trace
 from openinference.instrumentation.langchain import LangChainInstrumentor
 from app.models import user as _user_model  # noqa: F401
+from app.models import user_block_log as _user_block_log_model  # noqa: F401
 from app.models import conversation as _conversation_model  # noqa: F401
 from app.models import document as _document_model  # noqa: F401
 from app.models import feedback as _feedback_model  # noqa: F401
@@ -40,6 +42,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api", tags=["auth"])
+app.include_router(admin_users_router, prefix="/api", tags=["admin-users"])
 app.include_router(mvp_router, prefix="/api", tags=["mvp"])
 app.include_router(phoenix_proxy_router, prefix="/api", tags=["phoenix"])
 app.include_router(audit_router, prefix="/api", tags=["admin"])

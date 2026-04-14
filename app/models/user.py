@@ -22,6 +22,9 @@ class User(Base):
     # Soft-delete fields for GDPR compliance (Stage 7)
     is_deleted: Mapped[bool] = mapped_column(default=False)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Block/unblock fields
+    is_blocked: Mapped[bool] = mapped_column(default=False)
+    blocked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
