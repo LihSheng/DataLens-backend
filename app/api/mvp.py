@@ -345,9 +345,12 @@ async def delete_conversation(
     current_user: User = Depends(get_current_user),
 ):
     conv = await _ensure_conversation_owned(db, conversation_id, current_user.id)
+    # Explicitly delete children before the parent to avoid DB FK constraint issues
+    await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    await db.execute(delete(ShareToken).where(ShareToken.conversation_id == conversation_id))
     await db.delete(conv)
     await db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(status_code=HTTP_204_NO_CONTENT)
 
 
 @router.get("/conversations/{conversation_id}/messages")
@@ -473,6 +476,7 @@ async def chat(
                 input_tokens = int(result.get("input_tokens", 0))
                 output_tokens = int(result.get("output_tokens", 0))
             except Exception:
+                logger.exception("RAG inference failed in /api/chat")
                 answer = (
                     "I couldn't complete model inference right now. "
                     "Please verify model credentials and try again."

@@ -119,12 +119,12 @@ USE_PROVIDER = settings.use_provider
 EMBEDDING_MODEL = settings.embedding_model
 GROQ_MODEL = settings.groq_model
 MINIMAX_MODEL = settings.minimax_model
-OPENAI_API_KEY = settings.openai_api_key or settings.groq_api_key
-OPENAI_API_BASE = (
-    "https://api.minimax.chat/v1"
-    if settings.use_provider == "minimax"
-    else "https://api.openai.com/v1"
-)
+if settings.use_provider == "minimax":
+    OPENAI_API_KEY = settings.minimax_api_key
+    OPENAI_API_BASE = "https://api.minimax.chat/v1"
+else:
+    OPENAI_API_KEY = settings.openai_api_key or settings.groq_api_key
+    OPENAI_API_BASE = "https://api.openai.com/v1"
 VECTORSTORE_TYPE = settings.vectorstore_type
 MILVUS_HOST = settings.milvus_host
 MILVUS_PORT = settings.milvus_port

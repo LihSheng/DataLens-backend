@@ -16,7 +16,7 @@ class ShareToken(Base):
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
     conversation_id: Mapped[str] = mapped_column(
-        String, ForeignKey("conversations.id"), nullable=False
+        String, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
     token: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     created_by: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
