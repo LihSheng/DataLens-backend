@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from opentelemetry import trace as otel_trace
@@ -26,10 +27,23 @@ from app.routing.model_router import ModelRouter
 from app.safety.safety_layer import SafetyLayer, SafetyResponse
 from app.services.cost_tracker import estimate_cost_usd
 from app.services.vectorstore_service import get_llm, get_vectorstore
+from app.config import settings as app_settings
 
 logger = logging.getLogger(__name__)
 
 tracer = otel_trace.get_tracer(__name__)
+
+def _safe_print(text: str) -> None:
+    """
+    Windows PowerShell often uses a legacy console encoding (e.g. cp1252).
+    Printing prompts with Unicode can crash request handling via UnicodeEncodeError.
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful AI assistant answering questions based on the provided context.\n"
@@ -72,7 +86,18 @@ class RAGChain:
         enable_followup: bool = True,
         trace_id: Optional[str] = None,
     ):
-        self.settings = settings or {}
+        # Merge runtime chain settings with env-backed defaults.
+        base_settings: Dict[str, Any] = {
+            "semantic_cache_enabled": bool(app_settings.semantic_cache_enabled),
+            "semantic_cache_threshold": float(app_settings.semantic_cache_threshold),
+            "context_max_tokens": int(app_settings.context_max_tokens),
+            "routing_mode": str(app_settings.routing_mode),
+            "fast_model": str(app_settings.fast_model),
+            "quality_model": str(app_settings.quality_model),
+        }
+        self.settings = dict(base_settings)
+        if settings:
+            self.settings.update(settings)
         self.filters = filters or {}
         self.k = k
         self.rerank_top_n = rerank_top_n
@@ -361,9 +386,16 @@ class RAGChain:
         if include_history:
             payload["conversation_history"] = history
 
-        # DEBUG: log the full prompt sent to LLM
-        rendered_prompt = prompt.invoke(payload)
-        print(f"[LLM PROMPT] {rendered_prompt.to_string()}")
+        # Debug logging must never dump full context/prompt in normal runs (PII risk).
+        if app_settings.log_llm_prompt:
+            _safe_print(
+                "[LLM PROMPT] "
+                f"model={route.model} "
+                f"question_chars={len(question or '')} "
+                f"context_chars={len(assembly.context or '')} "
+                f"history_chars={len(history or '')} "
+                f"chunks={len(assembly.selected_docs)}"
+            )
 
         answer = chain.invoke(payload)
 

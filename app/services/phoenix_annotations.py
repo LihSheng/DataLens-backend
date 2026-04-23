@@ -58,6 +58,9 @@ async def _post_annotation(
     if metadata:
         payload["metadata"] = metadata
 
+    if not settings.phoenix_enabled:
+        return False
+
     try:
         client = await _get_client()
         response = await client.post("/v1/span_annotations", json=payload)

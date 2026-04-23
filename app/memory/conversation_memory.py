@@ -60,6 +60,7 @@ class ConversationMemory:
         self.max_turns = max_turns
         self.ttl_seconds = ttl_seconds
         self._client: Optional[redis.Redis] = None
+        self._warned_unavailable = False
 
     @property
     def client(self) -> redis.Redis:
@@ -100,25 +101,31 @@ class ConversationMemory:
             "created_at": _now_iso(),
         }
 
-        pipe = self.client.pipeline()
-        pipe.rpush(self._key(conversation_id), json.dumps(entry))
-        pipe.expire(self._key(conversation_id), self.ttl_seconds)
+        try:
+            pipe = self.client.pipeline()
+            pipe.rpush(self._key(conversation_id), json.dumps(entry))
+            pipe.expire(self._key(conversation_id), self.ttl_seconds)
 
-        # Update meta: updated_at, last_trace_id
-        meta = {
-            "updated_at": _now_iso(),
-            "last_trace_id": trace_id,
-        }
-        pipe.hset(self._meta_key(conversation_id), mapping=meta)
-        pipe.expire(self._meta_key(conversation_id), self.ttl_seconds)
+            # Update meta: updated_at, last_trace_id
+            meta = {
+                "updated_at": _now_iso(),
+                "last_trace_id": trace_id,
+            }
+            pipe.hset(self._meta_key(conversation_id), mapping=meta)
+            pipe.expire(self._meta_key(conversation_id), self.ttl_seconds)
 
-        # Trim to max_turns pairs (2 messages per turn)
-        pipe.ltrim(
-            self._key(conversation_id),
-            max(0, -self.max_turns * 2),
-            -1,
-        )
-        pipe.execute()
+            # Trim to max_turns pairs (2 messages per turn)
+            pipe.ltrim(
+                self._key(conversation_id),
+                max(0, -self.max_turns * 2),
+                -1,
+            )
+            pipe.execute()
+        except redis.exceptions.RedisError:
+            # Dev/local convenience: allow RAG to run without Redis.
+            if not self._warned_unavailable:
+                logger.warning("Redis unavailable; conversation memory disabled until Redis is reachable")
+                self._warned_unavailable = True
 
         logger.debug(
             "Added %s message to conversation %s (id=%s)",
@@ -159,9 +166,16 @@ class ConversationMemory:
             limit: Max number of **message pairs** (user+assistant) to return.
                    None = return all (up to max_turns).
         """
-        raw: List[str] = self.client.lrange(
-            self._key(conversation_id), 0, -1
-        )
+        try:
+            raw: List[str] = self.client.lrange(
+                self._key(conversation_id), 0, -1
+            )
+        except redis.exceptions.RedisError:
+            # Dev/local convenience: treat missing Redis as empty history.
+            if not self._warned_unavailable:
+                logger.warning("Redis unavailable; conversation memory disabled until Redis is reachable")
+                self._warned_unavailable = True
+            return []
         messages = [json.loads(entry) for entry in raw]
 
         if limit:
@@ -191,8 +205,13 @@ class ConversationMemory:
 
     def clear(self, conversation_id: str) -> None:
         """Delete all history for a conversation."""
-        self.client.delete(self._key(conversation_id))
-        self.client.delete(self._meta_key(conversation_id))
+        try:
+            self.client.delete(self._key(conversation_id))
+            self.client.delete(self._meta_key(conversation_id))
+        except redis.exceptions.RedisError:
+            if not self._warned_unavailable:
+                logger.warning("Redis unavailable; conversation memory disabled until Redis is reachable")
+                self._warned_unavailable = True
         logger.debug("Cleared conversation %s", conversation_id)
 
     def get_meta(
@@ -200,7 +219,13 @@ class ConversationMemory:
         conversation_id: str,
     ) -> Optional[Dict[str, Any]]:
         """Get conversation metadata (updated_at, last_trace_id)."""
-        return self.client.hgetall(self._meta_key(conversation_id)) or None
+        try:
+            return self.client.hgetall(self._meta_key(conversation_id)) or None
+        except redis.exceptions.RedisError:
+            if not self._warned_unavailable:
+                logger.warning("Redis unavailable; conversation memory disabled until Redis is reachable")
+                self._warned_unavailable = True
+            return None
 
     def update_trace_id(
         self,
@@ -208,18 +233,26 @@ class ConversationMemory:
         trace_id: str,
     ) -> None:
         """Update the last trace_id on a conversation."""
-        self.client.hset(
-            self._meta_key(conversation_id),
-            "last_trace_id",
-            trace_id,
-        )
+        try:
+            self.client.hset(
+                self._meta_key(conversation_id),
+                "last_trace_id",
+                trace_id,
+            )
+        except redis.exceptions.RedisError:
+            if not self._warned_unavailable:
+                logger.warning("Redis unavailable; conversation memory disabled until Redis is reachable")
+                self._warned_unavailable = True
 
     # ------------------------------------------------------------------
     # Conversation-level operations
     # ------------------------------------------------------------------
 
     def conversation_exists(self, conversation_id: str) -> bool:
-        return self.client.exists(self._key(conversation_id)) > 0
+        try:
+            return self.client.exists(self._key(conversation_id)) > 0
+        except redis.exceptions.RedisError:
+            return False
 
     def get_turn_count(self, conversation_id: str) -> int:
         """Return number of user messages in the conversation."""

@@ -92,6 +92,7 @@ async def run_ingestion_pipeline(
             parse_error="No text could be extracted from the document",
             ocr_applied=ocr_used,
             pii_entities_found="[]",
+            chunk_count=0,
         )
         return {
             "document_id": document_id,
@@ -134,6 +135,7 @@ async def run_ingestion_pipeline(
             parse_error="Chunking produced no output",
             ocr_applied=ocr_used,
             pii_entities_found=pii_json,
+            chunk_count=0,
         )
         return {
             "document_id": document_id,
@@ -158,6 +160,7 @@ async def run_ingestion_pipeline(
             ocr_applied=ocr_used,
             pii_entities_found=pii_json,
             chunking_strategy=chunk_strategy,
+            chunk_count=0,
         )
         return {
             "document_id": document_id,
@@ -175,6 +178,7 @@ async def run_ingestion_pipeline(
         ocr_applied=ocr_used,
         pii_entities_found=pii_json,
         chunking_strategy=chunk_strategy,
+        chunk_count=len(chunks),
     )
 
     # ── 7. Done ─────────────────────────────────────────────────────────────────
@@ -204,6 +208,7 @@ async def _update_document_status(
     ocr_applied: bool = False,
     pii_entities_found: str = "[]",
     chunking_strategy: str = "recursive",
+    chunk_count: int = 0,
 ) -> None:
     """Update a Document record's status fields."""
     if db is None:
@@ -226,6 +231,9 @@ async def _update_document_status(
         doc.ocr_applied = ocr_applied
         doc.pii_entities_found = pii_entities_found
         doc.chunking_strategy = chunking_strategy
+        # Newer schema: allow older DBs to run without migration hard-fail.
+        if hasattr(doc, "chunk_count"):
+            doc.chunk_count = int(chunk_count or 0)
 
         await db.commit()
     except Exception as e:

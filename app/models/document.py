@@ -27,6 +27,7 @@ class Document(Base):
         String, nullable=True
     )  # JSON list
     chunking_strategy: Mapped[str] = mapped_column(String, default="recursive")
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
     parent_document_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("documents.id"), nullable=True

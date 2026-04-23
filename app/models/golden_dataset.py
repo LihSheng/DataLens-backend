@@ -1,10 +1,9 @@
 """GoldenDataset model — Stage 6."""
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
-from sqlalchemy import String, DateTime, ARRAY
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import String, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -18,8 +17,8 @@ class GoldenDataset(Base):
     )
     question: Mapped[str] = mapped_column(String, nullable=False)
     answer: Mapped[str] = mapped_column(String, nullable=False)
-    context: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
+    context: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # 'manual' | 'extracted'
-    tags: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
+    tags: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
     created_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

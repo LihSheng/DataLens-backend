@@ -3,8 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, DateTime, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import String, DateTime, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -33,7 +32,7 @@ class AuditLog(Base):
     )  # e.g. 'user', 'experiment', 'settings'
     resource_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     # Extra context
-    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # Where
     ip_address: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

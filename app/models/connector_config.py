@@ -3,8 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, DateTime, Boolean
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import String, DateTime, Boolean, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -19,7 +18,7 @@ class ConnectorConfig(Base):
     connector_type: Mapped[str] = mapped_column(
         String(50), unique=True, nullable=False
     )  # 'filesystem', 's3', 'googledrive', 'notion'
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False)  # connection credentials, paths
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)  # connection credentials, paths
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[Optional[str]] = mapped_column(
         String, ForeignKey("users.id"), nullable=True

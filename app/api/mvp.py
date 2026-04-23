@@ -162,13 +162,42 @@ def _serialise_document(doc: Document, restricted: bool = False) -> dict[str, An
         "status": doc.status,
         "uploadedAt": _iso(doc.created_at),
         "extension": doc.extension,
-        "chunkCount": 0,
+        "chunkCount": int(getattr(doc, "chunk_count", 0) or 0),
         "parseError": doc.parse_error,
         "ocrApplied": bool(doc.ocr_applied),
         "piiEntitiesFound": pii_entities,
         "version": int(doc.version or 1),
         "restricted": restricted,
     }
+
+
+async def _run_inline_ingestion(
+    *,
+    file_path: str,
+    user_id: str,
+    document_id: str,
+    chunk_strategy: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    redact_pii: bool,
+    db: AsyncSession,
+) -> dict[str, Any]:
+    from app.ingestion.pipeline import run_ingestion_pipeline
+
+    return await run_ingestion_pipeline(
+        file_path=file_path,
+        user_id=user_id,
+        document_id=document_id,
+        options={
+            "chunk_strategy": chunk_strategy,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "redact_pii": redact_pii,
+            "use_presidio": False,
+            "enable_semantic": False,
+        },
+        db=db,
+    )
 
 
 async def _get_or_create_settings(db: AsyncSession, user_id: str) -> dict[str, Any]:
@@ -350,7 +379,7 @@ async def delete_conversation(
     await db.execute(delete(ShareToken).where(ShareToken.conversation_id == conversation_id))
     await db.delete(conv)
     await db.commit()
-    return Response(status_code=HTTP_204_NO_CONTENT)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/conversations/{conversation_id}/messages")
@@ -426,123 +455,131 @@ async def chat(
 ):
     tracer = otel_trace.get_tracer(__name__)
     with tracer.start_as_current_span("rag_request"):
-            if not payload.message.strip():
-                raise HTTPException(status_code=400, detail="message is required")
+        if not payload.message.strip():
+            raise HTTPException(status_code=400, detail="message is required")
 
-            conversation_id = payload.conversation_id
-            if not conversation_id or conversation_id == "conv_new":
-                conv = Conversation(user_id=current_user.id, title="New conversation")
-                db.add(conv)
-                await db.commit()
-                await db.refresh(conv)
-                conversation_id = conv.id
-            else:
-                conv = await _ensure_conversation_owned(db, conversation_id, current_user.id)
-
-            user_message = Message(
-                conversation_id=conversation_id,
-                role="user",
-                content=payload.message,
-                metadata_json=None,
-            )
-            db.add(user_message)
+        conversation_id = payload.conversation_id
+        if not conversation_id or conversation_id == "conv_new":
+            conv = Conversation(user_id=current_user.id, title="New conversation")
+            db.add(conv)
             await db.commit()
+            await db.refresh(conv)
+            conversation_id = conv.id
+        else:
+            conv = await _ensure_conversation_owned(db, conversation_id, current_user.id)
 
-            answer = ""
-            source_docs: list[Any] = []
-            followups: list[str] = []
-            cache_hit = False
-            routed_model = None
-            input_tokens = 0
-            output_tokens = 0
-            try:
-                chain_filters = payload.filters.model_dump(exclude_none=True) if payload.filters else {}
-                chain = RAGChain(
-                    settings={
-                        "query_expansion": False,
-                        "hyde": False,
-                        "reranker": False,
-                        "context_max_tokens": 1800,
-                    },
-                    filters=chain_filters,
-                    conversation_id=conversation_id,
-                )
-                result = chain.invoke({"question": payload.message})
-                answer = str(result.get("answer", "")).strip()
-                source_docs = result.get("source_documents", []) or []
-                followups = result.get("followup_questions", []) or []
-                cache_hit = bool(result.get("cache_hit", False))
-                routed_model = result.get("model")
-                input_tokens = int(result.get("input_tokens", 0))
-                output_tokens = int(result.get("output_tokens", 0))
-            except Exception:
-                logger.exception("RAG inference failed in /api/chat")
-                answer = (
-                    "I couldn't complete model inference right now. "
-                    "Please verify model credentials and try again."
-                )
+        user_message = Message(
+            conversation_id=conversation_id,
+            role="user",
+            content=payload.message,
+            metadata_json=None,
+        )
+        db.add(user_message)
+        await db.commit()
 
-            if not answer:
-                answer = "I couldn't find enough context to answer confidently."
+        answer = ""
+        source_docs: list[Any] = []
+        followups: list[str] = []
+        cache_hit = False
+        routed_model = None
+        input_tokens = 0
+        output_tokens = 0
+        error_code: str | None = None
 
-            sources = [_build_source(doc, i) for i, doc in enumerate(source_docs)]
-            token_usage = {
-                "used": max(0, input_tokens),
-                "available": int((await _get_or_create_settings(db, current_user.id)).get("maxTokens", 2048)),
-                "chunksIncluded": len(sources),
-                "chunksAvailable": len(sources),
-            }
+        try:
+            chain_filters = payload.filters.model_dump(exclude_none=True) if payload.filters else {}
+            chain = RAGChain(
+                settings={
+                    "query_expansion": False,
+                    "hyde": False,
+                    "reranker": False,
+                    "context_max_tokens": 1800,
+                },
+                filters=chain_filters,
+                conversation_id=conversation_id,
+            )
+            result = chain.invoke({"question": payload.message})
+            answer = str(result.get("answer", "")).strip()
+            source_docs = result.get("source_documents", []) or []
+            followups = result.get("followup_questions", []) or []
+            cache_hit = bool(result.get("cache_hit", False))
+            routed_model = result.get("model")
+            input_tokens = int(result.get("input_tokens", 0))
+            output_tokens = int(result.get("output_tokens", 0))
+        except Exception:
+            logger.exception("RAG inference failed in /api/chat")
+            error_code = "RAG_INFERENCE_FAILED"
+            answer = (
+                "I couldn't answer right now due to a server error during retrieval or inference. "
+                "Please try again."
+            )
 
-            assistant_meta = {
-                "sources": sources,
-                "suggestedFollowups": followups[:3],
-                "confidence": "high" if sources else "low",
-                "cacheHit": cache_hit,
-                "routedToModel": routed_model,
-                "latencyMs": 0,
+        if not answer:
+            answer = "I couldn't find enough context to answer confidently."
+
+        sources = [_build_source(doc, i) for i, doc in enumerate(source_docs)]
+        token_usage = {
+            "used": max(0, input_tokens),
+            "available": int((await _get_or_create_settings(db, current_user.id)).get("maxTokens", 2048)),
+            "chunksIncluded": len(sources),
+            "chunksAvailable": len(sources),
+        }
+
+        assistant_meta = {
+            "sources": sources,
+            "suggestedFollowups": followups[:3],
+            "confidence": "high" if sources else "low",
+            "cacheHit": cache_hit,
+            "routedToModel": routed_model,
+            "latencyMs": 0,
+            "tokenUsage": token_usage,
+        }
+        if error_code:
+            assistant_meta["errorCode"] = error_code
+
+        assistant_message = Message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=answer,
+            metadata_json=json.dumps(assistant_meta),
+        )
+        db.add(assistant_message)
+        conv.updated_at = datetime.utcnow()
+        await db.commit()
+
+        # Fire-and-forget RAGAS eval + Phoenix annotation after db commit
+        asyncio.create_task(
+            run_live_ragas_eval(
+                question=payload.message,
+                answer=answer,
+                source_docs=source_docs,
+                trace_id=conversation_id,
+            )
+        )
+
+        async def event_stream():
+            yield f"data: {json.dumps({'content': answer}, ensure_ascii=False)}\n\n"
+            if sources:
+                yield f"data: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
+            meta_payload: dict[str, Any] = {
+                "conversationId": conversation_id,
                 "tokenUsage": token_usage,
+                "cacheHit": cache_hit,
             }
-            assistant_message = Message(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=answer,
-                metadata_json=json.dumps(assistant_meta),
-            )
-            db.add(assistant_message)
-            conv.updated_at = datetime.utcnow()
-            await db.commit()
+            if error_code:
+                meta_payload["errorCode"] = error_code
+            if followups:
+                meta_payload["suggestedFollowups"] = followups[:3]
+            if routed_model:
+                meta_payload["routedToModel"] = routed_model
+            yield f"data: {json.dumps(meta_payload, ensure_ascii=False)}\n\n"
+            yield "data: {}\n\n"
 
-            # Fire-and-forget RAGAS eval + Phoenix annotation after db commit
-            asyncio.create_task(
-                run_live_ragas_eval(
-                    question=payload.message,
-                    answer=answer,
-                    source_docs=source_docs,
-                    trace_id=conversation_id,
-                )
-            )
-
-            async def event_stream():
-                yield f"data: {json.dumps({'content': answer}, ensure_ascii=False)}\n\n"
-                if sources:
-                    yield f"data: {json.dumps({'sources': sources}, ensure_ascii=False)}\n\n"
-                meta_payload: dict[str, Any] = {
-                    "conversationId": conversation_id,
-                    "tokenUsage": token_usage,
-                    "cacheHit": cache_hit,
-                }
-                if followups:
-                    meta_payload["suggestedFollowups"] = followups[:3]
-                if routed_model:
-                    meta_payload["routedToModel"] = routed_model
-                yield f"data: {json.dumps(meta_payload, ensure_ascii=False)}\n\n"
-                yield "data: {}\n\n"
-
-            return StreamingResponse(
-                event_stream(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
 
 @router.get("/documents")
@@ -612,7 +649,7 @@ async def upload_document(
         file_path=str(out_path),
         size=len(contents),
         extension=ext,
-        status="ready",
+        status="processing",
         chunking_strategy="recursive",
         version=1,
         is_active_version=True,
@@ -622,26 +659,57 @@ async def upload_document(
     await db.commit()
     await db.refresh(doc)
 
-    # Dispatch Celery ingest task
-    try:
-        from app.workers.ingestion_worker import process_document
-
-        process_document.delay(
+    if settings.vectorstore_type == "memory":
+        result = await _run_inline_ingestion(
             file_path=str(out_path),
             user_id=current_user.id,
             document_id=doc.id,
-            options={
-                "chunk_strategy": "recursive",
-                "chunk_size": 1000,
-                "chunk_overlap": 200,
-                "redact_pii": False,
-                "use_presidio": False,
-                "enable_semantic": False,
-            },
+            chunk_strategy="recursive",
+            chunk_size=1000,
+            chunk_overlap=200,
+            redact_pii=False,
+            db=db,
         )
-        logger.info(f"[API] Queued document {doc.id} for processing")
-    except Exception as e:
-        logger.exception(f"[API] Failed to dispatch Celery task: {e}")
+        await db.refresh(doc)
+        logger.info(
+            f"[API] Ingested document {doc.id} inline, status={result.get('status')}"
+        )
+    else:
+        # Dispatch Celery ingest task
+        try:
+            from app.workers.ingestion_worker import process_document
+
+            process_document.delay(
+                file_path=str(out_path),
+                user_id=current_user.id,
+                document_id=doc.id,
+                options={
+                    "chunk_strategy": "recursive",
+                    "chunk_size": 1000,
+                    "chunk_overlap": 200,
+                    "redact_pii": False,
+                    "use_presidio": False,
+                    "enable_semantic": False,
+                },
+            )
+            logger.info(f"[API] Queued document {doc.id} for processing")
+        except Exception as e:
+            logger.exception(f"[API] Failed to dispatch Celery task: {e}")
+            result = await _run_inline_ingestion(
+                file_path=str(out_path),
+                user_id=current_user.id,
+                document_id=doc.id,
+                chunk_strategy="recursive",
+                chunk_size=1000,
+                chunk_overlap=200,
+                redact_pii=False,
+                db=db,
+            )
+            await db.refresh(doc)
+            logger.info(
+                f"[API] Fallback inline ingestion completed for {doc.id}, "
+                f"status={result.get('status')}"
+            )
 
     return _serialise_document(doc, restricted=False)
 
@@ -718,7 +786,7 @@ async def reindex_document(
         file_path=doc.file_path,
         size=doc.size,
         extension=doc.extension,
-        status="ready",
+        status="processing",
         parse_error=None,
         ocr_applied=doc.ocr_applied,
         pii_entities_found=doc.pii_entities_found or "[]",
@@ -730,6 +798,49 @@ async def reindex_document(
     db.add(new_doc)
     await db.commit()
     await db.refresh(new_doc)
+
+    if settings.vectorstore_type == "memory":
+        await _run_inline_ingestion(
+            file_path=new_doc.file_path,
+            user_id=new_doc.user_id,
+            document_id=new_doc.id,
+            chunk_strategy=new_doc.chunking_strategy or "recursive",
+            chunk_size=1000,
+            chunk_overlap=200,
+            redact_pii=False,
+            db=db,
+        )
+        await db.refresh(new_doc)
+    else:
+        try:
+            from app.workers.ingestion_worker import process_document
+
+            process_document.delay(
+                file_path=new_doc.file_path,
+                user_id=new_doc.user_id,
+                document_id=new_doc.id,
+                options={
+                    "chunk_strategy": new_doc.chunking_strategy or "recursive",
+                    "chunk_size": 1000,
+                    "chunk_overlap": 200,
+                    "redact_pii": False,
+                    "use_presidio": False,
+                    "enable_semantic": False,
+                },
+            )
+        except Exception as e:
+            logger.exception(f"[API] Failed to dispatch Celery task: {e}")
+            await _run_inline_ingestion(
+                file_path=new_doc.file_path,
+                user_id=new_doc.user_id,
+                document_id=new_doc.id,
+                chunk_strategy=new_doc.chunking_strategy or "recursive",
+                chunk_size=1000,
+                chunk_overlap=200,
+                redact_pii=False,
+                db=db,
+            )
+            await db.refresh(new_doc)
     return {"message": "Reindex queued", "documentId": new_doc.id}
 
 

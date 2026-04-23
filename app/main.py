@@ -70,12 +70,16 @@ async def on_startup():
     # Register OTel tracer with Phoenix collector
     resource = Resource(attributes={"service.name": "rag-backend"})
     provider = TracerProvider(resource=resource)
-    try:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        exporter = OTLPSpanExporter(endpoint=settings.phoenix_collector_endpoint)
-        provider.add_span_processor(BatchSpanProcessor(exporter))
-    except Exception as e:
-        logger.warning(f"OTel: Phoenix exporter unavailable, traces will not be exported. Error: {e}")
+    if settings.phoenix_enabled and settings.otel_export_enabled:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+            exporter = OTLPSpanExporter(endpoint=settings.phoenix_collector_endpoint)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+        except Exception as e:
+            logger.warning(
+                f"OTel: exporter unavailable, traces will not be exported. Error: {e}"
+            )
     from opentelemetry.trace import set_tracer_provider
     set_tracer_provider(provider)
     LangChainInstrumentor().instrument(tracer_provider=provider)

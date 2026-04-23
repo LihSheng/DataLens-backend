@@ -93,8 +93,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006
 ## Quick Start
 
 ```bash
-# 1. Copy and fill in your env
-cp .env.example .env
+# 1. Copy and fill in your env (Docker compose)
+cp .env.docker.example .env
 
 # 2. Start everything
 docker compose up -d

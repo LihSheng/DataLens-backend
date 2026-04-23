@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     minimax_model: str = os.getenv("MINIMAX_MODEL", "MiniMax-Text-01")
 
     # --- Vector store ---
-    vectorstore_type: str = os.getenv("VECTORSTORE_TYPE", "memory")  # memory | milvus | chroma
+    vectorstore_type: str = os.getenv("VECTORSTORE_TYPE", "chroma")  # memory | milvus | chroma
     milvus_host: str = os.getenv("MILVUS_HOST", "localhost")
     milvus_port: int = int(os.getenv("MILVUS_PORT", "19530"))
     milvus_collection: str = os.getenv("MILVUS_COLLECTION", "rag_docs")
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # --- New Sprint 2 fields (stubs, no-op until stages implement them) ---
     # Database
     database_url: str = os.getenv(
-        "DATABASE_URL", "postgresql+asyncpg://raguser:ragpass@localhost:5432/ragdb"
+        "DATABASE_URL", "sqlite+aiosqlite:///./data/ragdb.sqlite"
     )
 
     # Redis
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     confidence_threshold: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
 
     # Stage 5
-    semantic_cache_enabled: bool = _env_bool("SEMANTIC_CACHE_ENABLED", True)
+    semantic_cache_enabled: bool = _env_bool("SEMANTIC_CACHE_ENABLED", False)
     semantic_cache_threshold: float = float(
         os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.9")
     )
@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     routing_mode: str = os.getenv("ROUTING_MODE", "balanced")
     fast_model: str = os.getenv("FAST_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
     quality_model: str = os.getenv("QUALITY_MODEL", os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+
+    # Debug / ops
+    log_llm_prompt: bool = _env_bool("LOG_LLM_PROMPT", False)
+    phoenix_enabled: bool = _env_bool("PHOENIX_ENABLED", False)
+    otel_export_enabled: bool = _env_bool("OTEL_EXPORT_ENABLED", False)
 
     model_config = SettingsConfigDict(
         env_file=".env",

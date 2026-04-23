@@ -6,7 +6,9 @@ No functional changes — pure migration in Stage 0.
 import logging
 from typing import List, Optional
 
+import faiss
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import Milvus, FAISS, Chroma
 from langchain_core.documents import Document
 
@@ -54,10 +56,10 @@ def get_vectorstore():
             print(f"Milvus connection failed: {e}, falling back to in-memory")
 
     if VECTORSTORE_TYPE == "chroma":
-        # Chroma with persistent storage + BM25 hybrid
-        _vectorstore = Chroma.from_texts(
-            texts=["initial placeholder"],
-            embedding=embeddings,
+        # Chroma with persistent storage + BM25 hybrid (start empty; do not seed junk docs)
+        _vectorstore = Chroma(
+            collection_name="datalens",
+            embedding_function=embeddings,
             persist_directory=CHROMA_PERSIST_PATH,
         )
         _vectorstore._bm25_texts = []
@@ -65,8 +67,15 @@ def get_vectorstore():
         _vectorstore._bm25 = None
         return _vectorstore
 
-    # In-memory FAISS
-    _vectorstore = FAISS.from_texts(["initial placeholder"], embeddings)
+    # In-memory FAISS (start empty; no placeholder docs)
+    dim = len(embeddings.embed_query("dimension probe"))
+    index = faiss.IndexFlatL2(dim)
+    _vectorstore = FAISS(
+        embedding_function=embeddings,
+        index=index,
+        docstore=InMemoryDocstore({}),
+        index_to_docstore_id={},
+    )
     # Initialise BM25 index storage (populated by add_documents_with_bm25)
     _vectorstore._bm25_texts = []
     _vectorstore._bm25_metadata = []
