@@ -44,6 +44,7 @@ from app.models.document import Document, DocumentAcl
 from app.models.feedback import Feedback
 from app.models.share_token import ShareToken
 from app.models.user import User
+from app.services.title_generator import generate_conversation_title
 
 router = APIRouter()
 
@@ -359,6 +360,52 @@ async def rename_conversation(
     conv.title = payload.title.strip() or conv.title
     conv.updated_at = datetime.utcnow()
     await db.commit()
+    return {
+        "id": conv.id,
+        "title": conv.title,
+        "createdAt": _iso(conv.created_at),
+        "updatedAt": _iso(conv.updated_at),
+    }
+
+
+@router.post("/title")
+async def generate_conversation_title_endpoint(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Auto-generate a short title for a conversation based on its messages.
+    Fetches all messages, calls the title generator LLM, and writes the title to the DB.
+    Fails silently if title generation fails — conversation keeps its current title.
+    """
+    conversation_id = payload.get("conversationId")
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversationId is required")
+
+    conv = await _ensure_conversation_owned(db, conversation_id, current_user.id)
+
+    # Fetch messages ordered by creation time
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.asc())
+    )
+    rows = result.scalars().all()
+
+    messages = [
+        {"role": row.role, "content": row.content}
+        for row in rows
+        if row.content and row.content.strip()
+    ]
+
+    generated_title = await generate_conversation_title(messages)
+
+    if generated_title:
+        conv.title = generated_title
+        conv.updated_at = datetime.utcnow()
+        await db.commit()
+
     return {
         "id": conv.id,
         "title": conv.title,

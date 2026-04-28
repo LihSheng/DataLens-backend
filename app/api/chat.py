@@ -34,6 +34,7 @@ from app.memory.conversation_memory import (
 )
 from app.services.cost_tracker import record_query_cost
 from app.services.phoenix_annotations import run_live_ragas_eval, submit_feedback
+from app.api._errors import build_error
 
 router = APIRouter()
 
@@ -407,7 +408,7 @@ async def post_feedback(req: FeedbackRequest):
     if req.label not in ("positive", "negative"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="label must be 'positive' or 'negative'",
+            detail=build_error(code="INVALID_LABEL", message="label must be 'positive' or 'negative'"),
         )
 
     success = await submit_feedback(

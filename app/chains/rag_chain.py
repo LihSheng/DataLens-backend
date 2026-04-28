@@ -27,6 +27,7 @@ from app.routing.model_router import ModelRouter
 from app.safety.safety_layer import SafetyLayer, SafetyResponse
 from app.services.cost_tracker import estimate_cost_usd
 from app.services.vectorstore_service import get_llm, get_vectorstore
+from app.services.llm_runner import check_circuit_breaker, LLMCircuitOpenError
 from app.config import settings as app_settings
 
 logger = logging.getLogger(__name__)
@@ -396,6 +397,9 @@ class RAGChain:
                 f"history_chars={len(history or '')} "
                 f"chunks={len(assembly.selected_docs)}"
             )
+
+        # Circuit breaker — fail fast if provider is known down
+        check_circuit_breaker(app_settings.use_provider)
 
         answer = chain.invoke(payload)
 

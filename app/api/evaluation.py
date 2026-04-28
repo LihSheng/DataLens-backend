@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+from app.api._errors import build_error
+
 router = APIRouter(prefix="/api", tags=["evaluation"])
 
 
@@ -54,5 +56,5 @@ async def run_evaluation() -> RunEvaluationResponse:
     """
     raise HTTPException(
         status_code=501,
-        detail="Evaluation not yet implemented — Stage 6 (RAGAS integration) is pending",
+        detail=build_error(code="EVALUATION_NOT_IMPLEMENTED", message="Evaluation not yet implemented — Stage 6 (RAGAS integration) is pending"),
     )

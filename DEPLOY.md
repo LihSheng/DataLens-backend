@@ -31,7 +31,7 @@ Network:    Docker bridge "datalens" (isolated)
 
 | Service | Host | Purpose |
 |---|---|---|
-| API | `0.0.0.0:8000` | FastAPI backend |
+| API | `0.0.0.0:6333` | FastAPI backend |
 | Postgres | `127.0.0.1:5432` | DB (localhost only) |
 | Redis | `127.0.0.1:6379` | Cache (localhost only) |
 | Phoenix | `127.0.0.1:6006` | Traces UI (localhost only — no direct access) |

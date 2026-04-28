@@ -83,8 +83,8 @@ def get_vectorstore():
     return _vectorstore
 
 
-def get_llm(model_name: Optional[str] = None, temperature: float = 0.7):
-    """Returns the configured LLM (Groq or MiniMax/OpenAI-compatible)."""
+def get_llm(model_name: Optional[str] = None, temperature: float = 0.7, timeout: float = 60.0):
+    """Returns the configured LLM (Groq or MiniMax/OpenAI-compatible) with timeout."""
     if USE_PROVIDER == "groq":
         from langchain_groq import ChatGroq
 
@@ -92,6 +92,7 @@ def get_llm(model_name: Optional[str] = None, temperature: float = 0.7):
             model=model_name or GROQ_MODEL,
             api_key=GROQ_API_KEY,
             temperature=temperature,
+            timeout=timeout,
         )
     else:
         from langchain_openai import ChatOpenAI
@@ -101,6 +102,7 @@ def get_llm(model_name: Optional[str] = None, temperature: float = 0.7):
             openai_api_key=MINIMAX_API_KEY,
             openai_api_base=OPENAI_API_BASE,
             temperature=temperature,
+            timeout=timeout,
         )
 
 

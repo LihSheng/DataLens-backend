@@ -23,6 +23,7 @@ from app.config import settings
 from app.db.session import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
+from app.api._errors import build_error
 
 router = APIRouter()
 
@@ -117,7 +118,7 @@ async def register(payload: RegisterRequest, db: AsyncSession = Depends(get_db))
     if existing_user is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
+            detail=build_error(code="EMAIL_ALREADY_EXISTS", message="Email already registered"),
         )
 
     # Create new user (password stored as hash in production, dev-bypass for dev mode)
@@ -155,7 +156,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not _is_dev_login_allowed():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Credential auth is not enabled in this environment.",
+            detail=build_error(code="AUTH_NOT_ENABLED", message="Credential auth is not enabled in this environment."),
         )
 
     result = await db.execute(
@@ -182,7 +183,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     if user.is_blocked:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account has been blocked. Contact an administrator.",
+            detail=build_error(code="ACCOUNT_BLOCKED", message="Your account has been blocked. Contact an administrator."),
         )
 
     token = _issue_token(user)

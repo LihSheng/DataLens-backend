@@ -46,7 +46,9 @@ class Settings(BaseSettings):
     app_env: str = os.getenv("APP_ENV", "development")
     secret_key: str = os.getenv("SECRET_KEY", "change-me-in-production")
     allowed_origins: str = os.getenv(
-        "ALLOWED_ORIGINS", "http://localhost:5173,https://yourdomain.vercel.app"
+        # Keep 5173 for backward compatibility, but prefer the dedicated local dev port 5333.
+        "ALLOWED_ORIGINS",
+        "http://localhost:5333,http://localhost:5173,https://yourdomain.vercel.app",
     )
     # Dev-only auth bypass (disabled by default)
     dev_auth_bypass: bool = _env_bool("DEV_AUTH_BYPASS", False)

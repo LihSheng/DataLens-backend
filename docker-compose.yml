@@ -4,7 +4,7 @@ services:
   api:
     build: .
     ports:
-      - "8001:8000"
+      - "6333:8000"
     volumes:
       - .:/app
       - ./data:/app/data

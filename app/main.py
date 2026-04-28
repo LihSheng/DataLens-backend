@@ -14,8 +14,16 @@ from app.api.audit import router as audit_router
 from app.api.feedback import router as feedback_router
 from app.api.evaluation import router as evaluation_router
 from app.api.costs import router as costs_router
+from app.api.health import router as health_router
+from app.api._errors import (
+    request_id_middleware,
+    http_exception_handler,
+    validation_exception_handler,
+    generic_exception_handler,
+)
 from app.config import settings
 from app.db.session import create_tables
+from fastapi.exceptions import HTTPException, RequestValidationError
 
 # OTel / Phoenix instrumentation
 from opentelemetry.sdk.trace import TracerProvider
@@ -41,6 +49,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Correlation ID middleware + standardized error handlers
+app.middleware("http")(request_id_middleware)
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
+
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(admin_users_router, prefix="/api", tags=["admin-users"])
 app.include_router(mvp_router, prefix="/api", tags=["mvp"])
@@ -49,6 +63,7 @@ app.include_router(audit_router, prefix="/api", tags=["admin"])
 app.include_router(feedback_router, prefix="/api", tags=["feedback"])
 app.include_router(evaluation_router, tags=["evaluation"])
 app.include_router(costs_router, tags=["costs"])
+app.include_router(health_router, prefix="/api", tags=["health"])
 
 
 @app.get("/health")
@@ -88,4 +103,6 @@ async def on_startup():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Dedicated local dev port to reduce collisions with other services/VMs.
+    port = int(__import__("os").getenv("PORT", "6333"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
