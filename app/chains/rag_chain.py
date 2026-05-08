@@ -20,15 +20,11 @@ from app.memory.conversation_memory import get_conversation_memory
 from app.memory.followup_generator import generate_followup_questions
 from app.retrieval.filters import apply_filters
 from app.retrieval.hyde import HyDE
-from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.query_expander import QueryExpander
 from app.retrieval.reranker import Reranker
 from app.routing.model_router import ModelRouter
 from app.safety.safety_layer import SafetyLayer, SafetyResponse
 from app.services.cost_tracker import estimate_cost_usd
-from app.services.vectorstore_service import get_llm, get_vectorstore
-from app.services.llm_runner import check_circuit_breaker, LLMCircuitOpenError
-from app.config import settings as app_settings
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +73,8 @@ DEFAULT_USER_PROMPT = (
 class RAGChain:
     def __init__(
         self,
+        vectorstore,
+        llm_provider,
         settings: Optional[Dict[str, Any]] = None,
         filters: Optional[Dict[str, Any]] = None,
         k: int = 8,
@@ -87,6 +85,10 @@ class RAGChain:
         enable_followup: bool = True,
         trace_id: Optional[str] = None,
     ):
+        # Injected dependencies — the real seams
+        self._vectorstore = vectorstore
+        self._llm_provider = llm_provider
+
         # Merge runtime chain settings with env-backed defaults.
         base_settings: Dict[str, Any] = {
             "semantic_cache_enabled": bool(app_settings.semantic_cache_enabled),
@@ -117,7 +119,6 @@ class RAGChain:
         self._reranker = None
         self._query_expander = None
         self._hyde = None
-        self._vectorstore = None
         self._safety_layer: Optional[SafetyLayer] = None
         self._conversation_memory = None
         self._semantic_cache: Optional[SemanticCache] = None
@@ -145,7 +146,10 @@ class RAGChain:
 
     def _get_safety_layer(self) -> SafetyLayer:
         if self._safety_layer is None:
-            self._safety_layer = SafetyLayer(settings=self.settings)
+            self._safety_layer = SafetyLayer(
+                settings=self.settings,
+                llm_provider=self._llm_provider,
+            )
         return self._safety_layer
 
     # ------------------------------------------------------------------
@@ -155,6 +159,7 @@ class RAGChain:
     def _get_semantic_cache(self) -> SemanticCache:
         if self._semantic_cache is None:
             self._semantic_cache = SemanticCache(
+                embed_fn=self._vectorstore.embed_query,
                 similarity_threshold=float(
                     self.settings.get("semantic_cache_threshold", 0.9)
                 )
@@ -173,23 +178,14 @@ class RAGChain:
             self._model_router = ModelRouter()
         return self._model_router
 
-    # ------------------------------------------------------------------
-    # LLM + vectorstore accessors
-    # ------------------------------------------------------------------
-
-    def _get_vectorstore(self):
-        if self._vectorstore is None:
-            self._vectorstore = get_vectorstore()
-        return self._vectorstore
-
     def _get_query_expander(self) -> QueryExpander:
         if self._query_expander is None:
-            self._query_expander = QueryExpander()
+            self._query_expander = QueryExpander(self._llm_provider)
         return self._query_expander
 
     def _get_hyde(self) -> HyDE:
         if self._hyde is None:
-            self._hyde = HyDE()
+            self._hyde = HyDE(self._llm_provider)
         return self._hyde
 
     def _get_reranker(self) -> Reranker:
@@ -200,19 +196,6 @@ class RAGChain:
     # ------------------------------------------------------------------
     # Retrieval pipeline
     # ------------------------------------------------------------------
-
-    def _build_retriever(self):
-        vs = self._get_vectorstore()
-        bm25_texts = getattr(vs, "_bm25_texts", None)
-        bm25_metadata = getattr(vs, "_bm25_metadata", None)
-        if bm25_texts:
-            return HybridRetriever(
-                bm25_texts=bm25_texts,
-                bm25_metadata=bm25_metadata,
-                vectorstore=vs,
-                k=self.k,
-            )
-        return vs.as_retriever(search_kwargs={"k": self.k})
 
     def _retrieve(self, query: str) -> List[Document]:
         use_expansion = self.settings.get("query_expansion", False)
@@ -229,12 +212,12 @@ class RAGChain:
                 queries = self._get_query_expander().expand(query)
 
             all_docs: List[Document] = []
-            vs = self._get_vectorstore()
+            vs = self._vectorstore
             for q in queries:
                 if use_hyde:
                     docs = self._get_hyde()(q, vs, k=self.k)
                 else:
-                    docs = self._build_retriever().invoke(q, k=self.k)
+                    docs = vs.search(q, k=self.k)
                 all_docs.extend(docs)
 
             seen = set()
@@ -377,7 +360,7 @@ class RAGChain:
             context_tokens=assembly.context_tokens,
             settings=self.settings,
         )
-        llm = get_llm(model_name=route.model)
+        llm = self._llm_provider.get_llm(model_name=route.model)
 
         include_history = bool(history and self.enable_memory)
         prompt = self._build_prompt(include_history=include_history)
@@ -399,7 +382,7 @@ class RAGChain:
             )
 
         # Circuit breaker — fail fast if provider is known down
-        check_circuit_breaker(app_settings.use_provider)
+        self._llm_provider.ensure_circuit_ok()
 
         answer = chain.invoke(payload)
 
@@ -479,6 +462,7 @@ class RAGChain:
             return []
         history = self._get_conversation_history()
         return generate_followup_questions(
+            llm_provider=self._llm_provider,
             conversation_history=history,
             current_answer=answer,
             followup_enabled=self.enable_followup,

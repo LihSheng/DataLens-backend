@@ -1,16 +1,34 @@
 """
-Vector store + embedding service.
-Re-exports the existing vectorstore / embedding logic from the original main.py.
-No functional changes — pure migration in Stage 0.
+DEPRECATED — use app.core.vectorstore and app.core.llm_provider instead.
+
+This module remains as a backward-compatibility shim. All new code should
+inject adapters via app.state or factory functions from app.core.
 """
 import logging
-from typing import List, Optional
 
-import faiss
-from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_community.vectorstores import Milvus, FAISS, Chroma
-from langchain_core.documents import Document
+logger = logging.getLogger(__name__)
+
+from app.core.vectorstore import (
+    ChromaVectorStore,
+    FAISSVectorStore,
+    IndexedChunk,
+    MilvusVectorStore,
+    VectorStore,
+    create_vectorstore,
+)
+from app.core.llm_provider import (
+    CircuitOpenError,
+    GroqProvider,
+    LLMProvider,
+    OpenAICompatibleProvider,
+    create_llm_provider,
+)
+
+# Legacy globals — lazy-initialised once, forwarding to the new modules.
+
+_legacy_vs: object = None
+_legacy_llm: object = None
+_legacy_embeddings: object = None
 
 from app.config import (
     USE_PROVIDER,
@@ -26,152 +44,78 @@ from app.config import (
     CHROMA_PERSIST_PATH,
 )
 
-# --- Embeddings (shared singleton) ---
-embeddings = HuggingFaceBgeEmbeddings(
-    model_name="BAAI/bge-large-en-v1.5",
-    model_kwargs={"device": "cpu"},
-    encode_kwargs={"normalize_embeddings": True},
-)
+# --- Embeddings (shared singleton, backward compat) ---
 
-# --- Global state (same as original main.py) ---
-_vectorstore: Optional[object] = None
-# _qa_chain: Optional[object] = None  # TODO: disabled - depends on langchain_classic
+embeddings = None  # will be set on first access
+
+
+def _ensure_embeddings():
+    global embeddings, _legacy_embeddings
+    if _legacy_embeddings is None:
+        from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+        _legacy_embeddings = HuggingFaceBgeEmbeddings(
+            model_name="BAAI/bge-large-en-v1.5",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+        embeddings = _legacy_embeddings
+    return _legacy_embeddings
+
+
+_ensure_embeddings()
 
 
 def get_vectorstore():
-    """Returns the existing global vectorstore, initialising on first call."""
-    global _vectorstore
-    if _vectorstore is not None:
-        return _vectorstore
-
-    if VECTORSTORE_TYPE == "milvus":
-        try:
-            _vectorstore = Milvus(
-                embedding_function=embeddings,
-                connection_args={"host": MILVUS_HOST, "port": MILVUS_PORT},
-                collection_name=MILVUS_COLLECTION,
-            )
-            return _vectorstore
-        except Exception as e:
-            print(f"Milvus connection failed: {e}, falling back to in-memory")
-
-    if VECTORSTORE_TYPE == "chroma":
-        # Chroma with persistent storage + BM25 hybrid (start empty; do not seed junk docs)
-        _vectorstore = Chroma(
-            collection_name="datalens",
-            embedding_function=embeddings,
-            persist_directory=CHROMA_PERSIST_PATH,
-        )
-        _vectorstore._bm25_texts = []
-        _vectorstore._bm25_metadata = []
-        _vectorstore._bm25 = None
-        return _vectorstore
-
-    # In-memory FAISS (start empty; no placeholder docs)
-    dim = len(embeddings.embed_query("dimension probe"))
-    index = faiss.IndexFlatL2(dim)
-    _vectorstore = FAISS(
-        embedding_function=embeddings,
-        index=index,
-        docstore=InMemoryDocstore({}),
-        index_to_docstore_id={},
+    logger.warning(
+        "get_vectorstore() is deprecated; inject a VectorStore adapter instead. "
+        "See app.core.vectorstore."
     )
-    # Initialise BM25 index storage (populated by add_documents_with_bm25)
-    _vectorstore._bm25_texts = []
-    _vectorstore._bm25_metadata = []
-    _vectorstore._bm25 = None
-    return _vectorstore
+    global _legacy_vs
+    if _legacy_vs is not None:
+        return _legacy_vs
+
+    from app.core.vectorstore import create_vectorstore as _create_vs
+
+    _legacy_vs = _create_vs(
+        backend=VECTORSTORE_TYPE,
+        chroma_persist_path=CHROMA_PERSIST_PATH,
+        milvus_host=MILVUS_HOST,
+        milvus_port=MILVUS_PORT,
+        milvus_collection=MILVUS_COLLECTION,
+    )
+    return _legacy_vs
 
 
-def get_llm(model_name: Optional[str] = None, temperature: float = 0.7, timeout: float = 60.0):
-    """Returns the configured LLM (Groq or MiniMax/OpenAI-compatible) with timeout."""
-    if USE_PROVIDER == "groq":
-        from langchain_groq import ChatGroq
+def get_llm(model_name=None, temperature=0.7, timeout=60.0):
+    logger.warning(
+        "get_llm() is deprecated; inject an LLMProvider adapter instead. "
+        "See app.core.llm_provider."
+    )
+    global _legacy_llm
+    if _legacy_llm is None:
+        from app.core.llm_provider import create_llm_provider as _create_llm
 
-        return ChatGroq(
-            model=model_name or GROQ_MODEL,
-            api_key=GROQ_API_KEY,
-            temperature=temperature,
-            timeout=timeout,
+        _legacy_llm = _create_llm(
+            provider=USE_PROVIDER,
+            groq_api_key=GROQ_API_KEY,
+            groq_model=GROQ_MODEL,
+            minimax_api_key=MINIMAX_API_KEY,
+            minimax_model=MINIMAX_MODEL,
         )
-    else:
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(
-            model=model_name or MINIMAX_MODEL,
-            openai_api_key=MINIMAX_API_KEY,
-            openai_api_base=OPENAI_API_BASE,
-            temperature=temperature,
-            timeout=timeout,
-        )
+    return _legacy_llm.get_llm(model=model_name, temperature=temperature, timeout=timeout)
 
 
-# def build_qa_chain():
-#     """Builds (or returns cached) the RetrievalQA chain."""
-#     global _qa_chain
-#     vs = get_vectorstore()
-#     llm = get_llm()
-#
-#     _qa_chain = RetrievalQA.from_chain_type(
-#         llm=llm,
-#         chain_type="stuff",
-#         retriever=vs.as_retriever(search_kwargs={"k": 4}),
-#     )
-#     return _qa_chain
-
-
-def add_documents_with_bm25(
-    chunks: List[Document],
-    texts: List[str] = None,
-    metadatas: List[dict] = None,
-) -> None:
-    """
-    Add documents to the vector store and the in-memory BM25 index.
-
-    This enables hybrid retrieval (dense + sparse) after documents are ingested.
-
-    Args:
-        chunks: List of LangChain Document objects to add.
-        texts: Optional explicit list of text strings (uses chunk.page_content if None).
-        metadatas: Optional explicit list of metadata dicts (uses chunk.metadata if None).
-    """
-    global _vectorstore
+def add_documents_with_bm25(chunks, texts=None, metadatas=None):
+    logger.warning(
+        "add_documents_with_bm25() is deprecated; use vectorstore.add() instead. "
+        "See app.core.vectorstore."
+    )
+    from app.core.vectorstore import IndexedChunk as _Chunk
 
     vs = get_vectorstore()
-
-    # Initialise BM25 lists on first call
-    if not hasattr(vs, "_bm25_texts"):
-        vs._bm25_texts = []
-        vs._bm25_metadata = []
-        vs._bm25 = None
-
-    # Resolve texts / metadatas
-    texts = texts or [c.page_content for c in chunks]
-    metadatas = metadatas or [c.metadata for c in chunks]
-
-    # Add to vector store (Chroma uses add_texts, FAISS uses add_documents)
-    if VECTORSTORE_TYPE == "chroma":
-        vs.add_texts(texts=texts, metadatas=metadatas)
-        vs.persist()
-    else:
-        vs.add_documents(chunks)
-
-    # Extend BM25 index
-    vs._bm25_texts.extend(texts)
-    vs._bm25_metadata.extend(metadatas)
-
-    # Rebuild BM25 index
-    try:
-        import rank_bm25
-    except ImportError:
-        logging.warning(
-            "rank_bm25 not installed; BM25 index will not be rebuilt. "
-            "Install with: pip install rank-bm25"
-        )
-        return
-
-    tokenized = [t.split(" ") for t in vs._bm25_texts]
-    vs._bm25 = rank_bm25.BM25Okapi(tokenized)
-    logging.info(
-        f"BM25 index rebuilt: {len(vs._bm25_texts)} documents indexed."
-    )
+    if texts is None:
+        texts = [c.page_content for c in chunks]
+    if metadatas is None:
+        metadatas = [c.metadata for c in chunks]
+    indexed = [_Chunk(content=t, metadata=m) for t, m in zip(texts, metadatas)]
+    vs.add(indexed)

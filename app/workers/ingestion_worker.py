@@ -23,6 +23,27 @@ from app.models import conversation as _conversation_model  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+# ── Lazy adapters for Celery worker process ───────────────────────────────────
+
+_worker_vs = None
+
+
+def _get_worker_vectorstore():
+    global _worker_vs
+    if _worker_vs is None:
+        from app.core import create_vectorstore
+        from app.config import settings as _settings
+
+        _worker_vs = create_vectorstore(
+            backend=_settings.vectorstore_type,
+            chroma_persist_path=_settings.chroma_persist_path,
+            milvus_host=_settings.milvus_host,
+            milvus_port=_settings.milvus_port,
+            milvus_collection=_settings.milvus_collection,
+        )
+    return _worker_vs
+
+
 # ── Async DB session factory (for Celery workers) ─────────────────────────────
 
 _engine = None
@@ -92,6 +113,7 @@ def process_document(self: Task, file_path: str, user_id: str, document_id: str,
                     file_path=file_path,
                     user_id=user_id,
                     document_id=document_id,
+                    vectorstore=_get_worker_vectorstore(),
                     options=options,
                     db=db,
                 )
@@ -128,7 +150,7 @@ def reindex_document(self: Task, document_id: str) -> Dict[str, Any]:
     from app.ingestion.chunker import chunk_document
     from app.ingestion.pii import detect_pii, entities_to_json
     from app.ingestion.ocr import ocr_pdf
-    from app.services.vectorstore_service import get_vectorstore, add_documents_with_bm25
+    from app.core.vectorstore import IndexedChunk
     from app.models.document import Document
     from pathlib import Path
 
@@ -197,8 +219,9 @@ def reindex_document(self: Task, document_id: str) -> Dict[str, Any]:
             )
 
             # Index
-            vs = get_vectorstore()
-            add_documents_with_bm25(chunks)
+            vs = _get_worker_vectorstore()
+            indexed = [IndexedChunk(content=c.page_content, metadata=c.metadata) for c in chunks]
+            vs.add(indexed)
 
             # Update new version
             new_doc.status = "ready"

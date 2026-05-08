@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from opentelemetry import trace as otel_trace
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, or_, select
@@ -33,6 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.chains.rag_chain import RAGChain
+from app.core.llm_provider import LLMProvider
+from app.core.vectorstore import VectorStore
 from app.services.phoenix_annotations import run_live_ragas_eval, submit_feedback
 from app.config import settings
 from app.db.session import get_db
@@ -49,27 +51,12 @@ from app.services.title_generator import generate_conversation_title
 router = APIRouter()
 
 
-DEFAULT_RAG_SETTINGS: dict[str, Any] = {
-    "modelName": "gpt-4o-mini",
-    "topK": 5,
-    "temperature": 0.7,
-    "maxTokens": 2048,
-    "showSourcesPanel": True,
-    "enableStreaming": True,
-    "hybridWeightDense": 0.5,
-    "rerankerEnabled": False,
-    "queryExpansionEnabled": False,
-    "hydeEnabled": False,
-    "chunkingStrategy": "semantic",
-    "confidenceThreshold": 0.5,
-    "memoryWindow": 5,
-    "conversationRetentionDays": 30,
-}
+def _get_vectorstore(request: Request) -> VectorStore:
+    return request.app.state.vectorstore
 
 
-class ChatFilters(BaseModel):
-    document_ids: list[str] | None = None
-    doc_type: str | None = None
+def _get_llm_provider(request: Request) -> LLMProvider:
+    return request.app.state.llm_provider
 
 
 class ChatRequest(BaseModel):
@@ -499,6 +486,8 @@ async def chat(
     payload: ChatRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    vectorstore: VectorStore = Depends(_get_vectorstore),
+    llm_provider: LLMProvider = Depends(_get_llm_provider),
 ):
     tracer = otel_trace.get_tracer(__name__)
     with tracer.start_as_current_span("rag_request"):
@@ -536,6 +525,8 @@ async def chat(
         try:
             chain_filters = payload.filters.model_dump(exclude_none=True) if payload.filters else {}
             chain = RAGChain(
+                vectorstore=vectorstore,
+                llm_provider=llm_provider,
                 settings={
                     "query_expansion": False,
                     "hyde": False,

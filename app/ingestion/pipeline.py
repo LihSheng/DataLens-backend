@@ -15,7 +15,7 @@ from app.ingestion.parsers import parse_document
 from app.ingestion.ocr import ocr_pdf
 from app.ingestion.pii import detect_pii, redact_pii, entities_to_json
 from app.ingestion.chunker import chunk_document
-from app.services.vectorstore_service import get_vectorstore, add_documents_with_bm25
+from app.core.vectorstore import IndexedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ async def run_ingestion_pipeline(
     file_path: str,
     user_id: str,
     document_id: str,
+    vectorstore,
     options: Optional[Dict[str, Any]] = None,
     db: Optional[AsyncSession] = None,
 ) -> Dict[str, Any]:
@@ -34,24 +35,9 @@ async def run_ingestion_pipeline(
         file_path:    Absolute path to the uploaded file.
         user_id:      ID of the owning user.
         document_id:  ID of the Document DB record.
-        options:      Pipeline options:
-                      - chunk_strategy: "recursive" | "fixed" | "semantic"
-                      - chunk_size: int
-                      - chunk_overlap: int
-                      - redact_pii: bool
-                      - use_presidio: bool
-                      - enable_semantic: bool
+        vectorstore:  VectorStore instance for indexing.
+        options:      Pipeline options.
         db:           Async SQLAlchemy session.
-
-    Returns:
-        {
-            "document_id": str,
-            "chunks_ingested": int,
-            "pii_found": int,
-            "ocr_used": bool,
-            "status": str,         # "ready" | "failed"
-            "parse_error": str | None,
-        }
     """
     opts = options or {}
     chunk_strategy = opts.get("chunk_strategy", "recursive")
@@ -148,8 +134,8 @@ async def run_ingestion_pipeline(
 
     # ── 5. Add to vector store ─────────────────────────────────────────────────
     try:
-        vs = get_vectorstore()
-        add_documents_with_bm25(chunks)
+        indexed = [IndexedChunk(content=c.page_content, metadata=c.metadata) for c in chunks]
+        vectorstore.add(indexed)
         logger.info(f"[Pipeline] Indexed {len(chunks)} chunks for document {document_id}")
     except Exception as e:
         logger.exception(f"[Pipeline] Vectorstore indexing failed: {e}")

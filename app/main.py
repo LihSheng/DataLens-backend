@@ -3,6 +3,7 @@ FastAPI app entrypoint for MVP FE/BE integration.
 """
 import logging
 logger = logging.getLogger(__name__)
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -22,6 +23,7 @@ from app.api._errors import (
     generic_exception_handler,
 )
 from app.config import settings
+from app.core import create_vectorstore, create_llm_provider
 from app.db.session import create_tables
 from fastapi.exceptions import HTTPException, RequestValidationError
 
@@ -39,7 +41,49 @@ from app.models import feedback as _feedback_model  # noqa: F401
 from app.models import share_token as _share_token_model  # noqa: F401
 from app.models import app_setting as _app_setting_model  # noqa: F401
 
-app = FastAPI(title="RAG API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await create_tables()
+
+    # Build injected adapters and store in app.state
+    app.state.vectorstore = create_vectorstore(
+        backend=settings.vectorstore_type,
+        chroma_persist_path=settings.chroma_persist_path,
+        milvus_host=settings.milvus_host,
+        milvus_port=settings.milvus_port,
+        milvus_collection=settings.milvus_collection,
+    )
+    app.state.llm_provider = create_llm_provider(
+        provider=settings.use_provider,
+        groq_api_key=settings.groq_api_key,
+        groq_model=settings.groq_model,
+        minimax_api_key=settings.minimax_api_key,
+        minimax_model=settings.minimax_model,
+        openai_api_key=settings.openai_api_key,
+        openai_api_base=settings.openai_api_base,
+    )
+
+    # Register OTel tracer with Phoenix collector
+    resource = Resource(attributes={"service.name": "rag-backend"})
+    provider = TracerProvider(resource=resource)
+    if settings.phoenix_enabled and settings.otel_export_enabled:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            exporter = OTLPSpanExporter(endpoint=settings.phoenix_collector_endpoint)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+        except Exception as e:
+            logger.warning(
+                f"OTel: exporter unavailable, traces will not be exported. Error: {e}"
+            )
+    from opentelemetry.trace import set_tracer_provider
+    set_tracer_provider(provider)
+    LangChainInstrumentor().instrument(tracer_provider=provider)
+
+    yield
+
+
+app = FastAPI(title="RAG API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -78,31 +122,8 @@ def health():
     }
 
 
-@app.on_event("startup")
-async def on_startup():
-    await create_tables()
-
-    # Register OTel tracer with Phoenix collector
-    resource = Resource(attributes={"service.name": "rag-backend"})
-    provider = TracerProvider(resource=resource)
-    if settings.phoenix_enabled and settings.otel_export_enabled:
-        try:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-
-            exporter = OTLPSpanExporter(endpoint=settings.phoenix_collector_endpoint)
-            provider.add_span_processor(BatchSpanProcessor(exporter))
-        except Exception as e:
-            logger.warning(
-                f"OTel: exporter unavailable, traces will not be exported. Error: {e}"
-            )
-    from opentelemetry.trace import set_tracer_provider
-    set_tracer_provider(provider)
-    LangChainInstrumentor().instrument(tracer_provider=provider)
-
-
 if __name__ == "__main__":
     import uvicorn
 
-    # Dedicated local dev port to reduce collisions with other services/VMs.
     port = int(__import__("os").getenv("PORT", "6333"))
     uvicorn.run(app, host="0.0.0.0", port=port)

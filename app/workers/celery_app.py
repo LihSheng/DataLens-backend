@@ -80,6 +80,8 @@ def run_experiment_task(
     from app.evaluation import experiment as exp_module
     from app.evaluation.golden_dataset import get_all_golden_entries
     from app.chains.rag_chain import RAGChain
+    from app.core import create_vectorstore, create_llm_provider
+    from app.config import settings as _settings
 
     logger = logging.getLogger(__name__)
     logger.info(f"[Experiment {experiment_id}] Starting evaluation task")
@@ -110,6 +112,24 @@ def run_experiment_task(
                 return {"experiment_id": experiment_id, "status": "completed", "results": {"count": 0}}
 
             # Generate answers for each golden question
+            # Lazy init adapters in worker process
+            eval_vs = create_vectorstore(
+                backend=_settings.vectorstore_type,
+                chroma_persist_path=_settings.chroma_persist_path,
+                milvus_host=_settings.milvus_host,
+                milvus_port=_settings.milvus_port,
+                milvus_collection=_settings.milvus_collection,
+            )
+            eval_llm = create_llm_provider(
+                provider=_settings.use_provider,
+                groq_api_key=_settings.groq_api_key,
+                groq_model=_settings.groq_model,
+                minimax_api_key=_settings.minimax_api_key,
+                minimax_model=_settings.minimax_model,
+                openai_api_key=_settings.openai_api_key,
+                openai_api_base=_settings.openai_api_base,
+            )
+
             generated_answers: List[Dict[str, Any]] = []
             for golden in golden_entries:
                 try:
@@ -117,12 +137,13 @@ def run_experiment_task(
 
                     # Build RAGChain from experiment config
                     chain = RAGChain(
+                        vectorstore=eval_vs,
+                        llm_provider=eval_llm,
                         settings={
                             "query_expansion": config.get("query_expansion", False),
                             "hyde": config.get("hyde", False),
                             "reranker": config.get("reranker", False),
                             "confidence_threshold": config.get("confidence_threshold", 0.7),
-                            # Memory disabled for eval
                             "enable_memory": False,
                             "enable_followup": False,
                         },

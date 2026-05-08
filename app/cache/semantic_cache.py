@@ -7,12 +7,11 @@ import math
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import redis
 
 from app.config import settings
-from app.services.vectorstore_service import embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +21,6 @@ _CACHE_INDEX_KEY = "datalens:semantic_cache:index:{namespace}"
 
 @dataclass
 class SemanticCacheHit:
-    """Cache hit payload."""
-
     answer: str
     sources: List[Dict[str, Any]]
     similarity: float
@@ -42,21 +39,16 @@ def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
 
 
 class SemanticCache:
-    """
-    Embedding-similarity cache using Redis as storage.
-
-    Entries are searched by comparing the incoming query embedding
-    against recent cached query embeddings in the same namespace.
-    """
-
     def __init__(
         self,
+        embed_fn: Callable[[str], List[float]],
         redis_url: Optional[str] = None,
         ttl_seconds: int = 3600,
         max_entries_per_namespace: int = 200,
         scan_limit: int = 50,
         similarity_threshold: float = 0.9,
     ):
+        self._embed_fn = embed_fn
         self.redis_url = redis_url or settings.redis_url
         self.ttl_seconds = ttl_seconds
         self.max_entries_per_namespace = max_entries_per_namespace
@@ -83,10 +75,8 @@ class SemanticCache:
     def _index_key(namespace: str) -> str:
         return _CACHE_INDEX_KEY.format(namespace=namespace)
 
-    @staticmethod
-    def _embed(text: str) -> List[float]:
-        emb = embeddings.embed_query(text)
-        return [float(x) for x in emb]
+    def _embed(self, text: str) -> List[float]:
+        return [float(x) for x in self._embed_fn(text)]
 
     def get(self, query: str, namespace: str = "global") -> Optional[SemanticCacheHit]:
         """Return the best semantic match if above threshold."""

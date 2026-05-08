@@ -82,8 +82,10 @@ class SafetyLayer:
             "based on the provided context. Please try rephrasing your question "
             "or providing more information."
         ),
+        llm_provider=None,
     ):
         s = settings or {}
+        self.llm_provider = llm_provider
         self.guardrails_enabled = s.get("guardrails_enabled", True)
         self.injection_check_enabled = s.get("prompt_injection_check", True)
         self.grounding_check_enabled = s.get("grounding_check", True)
@@ -163,12 +165,14 @@ class SafetyLayer:
         fallback_triggered = False
 
         # 3. Grounding check
+        grounding_llm = self.llm_provider.get_llm() if self.llm_provider else None
         grounding_result = check_grounding(
             question=question,
             answer=answer,
             documents=documents,
             grounding_check_enabled=self.grounding_check_enabled,
             threshold=self.grounding_threshold,
+            llm=grounding_llm,
         )
         results.append(SafetyResult(
             passed=grounding_result.grounded,

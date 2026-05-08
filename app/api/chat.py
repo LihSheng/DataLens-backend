@@ -19,13 +19,15 @@ import json
 
 from opentelemetry import trace as otel_trace
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chains.rag_chain import RAGChain
 from app.config import settings as app_settings
+from app.core.llm_provider import LLMProvider
+from app.core.vectorstore import VectorStore
 from app.db.session import get_db
 from app.memory.conversation_memory import (
     add_user_message,
@@ -37,6 +39,18 @@ from app.services.phoenix_annotations import run_live_ragas_eval, submit_feedbac
 from app.api._errors import build_error
 
 router = APIRouter()
+
+
+# ──────────────────────────────
+# Injected dependencies from app.state
+# ──────────────────────────────
+
+def _get_vectorstore(request: Request) -> VectorStore:
+    return request.app.state.vectorstore
+
+
+def _get_llm_provider(request: Request) -> LLMProvider:
+    return request.app.state.llm_provider
 
 
 # ─────────────────────────────────────────────────────────
@@ -145,21 +159,20 @@ def _get_otel_trace_id(fallback_trace_id: str = "") -> str:
 
 
 def _build_rag_chain(
+    vectorstore: VectorStore,
+    llm_provider: LLMProvider,
     req_settings: dict,
     req_filters: dict = None,
     conversation_id: Optional[str] = None,
 ) -> RAGChain:
-    """Build RAGChain with merged settings + Stage 4 memory params."""
     chain_settings = {
         "query_expansion": app_settings.query_expansion_enabled,
         "hyde": app_settings.hyde_enabled,
         "reranker": app_settings.reranker_enabled,
         "confidence_threshold": app_settings.confidence_threshold,
-        # Stage 4 defaults
         "enable_memory": True,
         "enable_followup": True,
         "conversation_history_limit": 10,
-        # Stage 5 defaults
         "semantic_cache_enabled": app_settings.semantic_cache_enabled,
         "semantic_cache_threshold": app_settings.semantic_cache_threshold,
         "context_max_tokens": app_settings.context_max_tokens,
@@ -173,6 +186,8 @@ def _build_rag_chain(
     filters = {k: v for k, v in filters.items() if v is not None}
 
     return RAGChain(
+        vectorstore=vectorstore,
+        llm_provider=llm_provider,
         settings=chain_settings,
         filters=filters or None,
         conversation_id=conversation_id,
@@ -194,17 +209,16 @@ def _format_sources(docs) -> List[str]:
 # ─────────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
-    """
-    SSE streaming chat endpoint — matches frontend's sendMessage().
-    Also stores messages in Redis ConversationMemory and returns
-    trace_id + follow-up questions (Stage 4).
-    """
-    # Ensure conversation exists
+async def chat(
+    req: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    vectorstore: VectorStore = Depends(_get_vectorstore),
+    llm_provider: LLMProvider = Depends(_get_llm_provider),
+):
     conversation_id = _ensure_conversation_id(req.conversation_id)
 
     chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
-    chain = _build_rag_chain({}, chain_filters, conversation_id=conversation_id)
+    chain = _build_rag_chain(vectorstore, llm_provider, {}, chain_filters, conversation_id=conversation_id)
 
     # Root span for the RAG request
     tracer = otel_trace.get_tracer(__name__)
@@ -293,11 +307,12 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/query", response_model=QueryResponse)
-async def query(req: QueryRequest, db: AsyncSession = Depends(get_db)):
-    """
-    Plain JSON query endpoint for internal/testing use.
-    Full retrieval pipeline + Stage 3 safety + Stage 4 memory.
-    """
+async def query(
+    req: QueryRequest,
+    db: AsyncSession = Depends(get_db),
+    vectorstore: VectorStore = Depends(_get_vectorstore),
+    llm_provider: LLMProvider = Depends(_get_llm_provider),
+):
     conversation_id = _ensure_conversation_id(req.conversation_id)
 
     # Root span for the RAG request
@@ -311,7 +326,7 @@ async def query(req: QueryRequest, db: AsyncSession = Depends(get_db)):
         chain_settings = req.settings.model_dump(exclude_none=True) if req.settings else {}
         chain_filters = req.filters.model_dump(exclude_none=True) if req.filters else None
 
-        chain = _build_rag_chain(chain_settings, chain_filters, conversation_id=conversation_id)
+        chain = _build_rag_chain(vectorstore, llm_provider, chain_settings, chain_filters, conversation_id=conversation_id)
         result = chain.invoke({"question": req.question})
 
         safety_response = result.get("safety_response")

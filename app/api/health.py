@@ -1,12 +1,6 @@
-"""
-Health + Readiness endpoints.
-
-GET  /api/health  — liveness probe (always 200 if app is running)
-GET  /api/ready   — readiness probe (checks DB, Redis, vector store)
-"""
 from typing import Optional
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -62,25 +56,19 @@ def _check_redis() -> tuple[bool, str]:
         return False, str(e)
 
 
-async def _check_vectorstore() -> tuple[bool, str]:
+async def _check_vectorstore(vectorstore) -> tuple[bool, str]:
     """Check if vector store is initialized."""
     try:
-        from app.services.vectorstore_service import get_vectorstore
-
-        vs = get_vectorstore()
-        if vs is None:
-            return False, "vectorstore not initialized"
-        return True, "ok"
+        if vectorstore is None:
+            return False, "vectorstore not injected"
+        ready = vectorstore.is_ready()
+        return (ready, "ok" if ready else "not initialized")
     except Exception as e:
         return False, str(e)
 
 
 @router.get("/ready", response_model=ReadinessResponse, tags=["health"])
-async def ready():
-    """
-    Readiness probe — checks all critical dependencies.
-    Returns 200 when ready, 503 when any check fails.
-    """
+async def ready(request: Request):
     from fastapi import HTTPException
 
     checks: dict[str, str] = {}
@@ -89,6 +77,17 @@ async def ready():
     # Database
     ok, msg = await _check_database()
     checks["database"] = msg
+    if not ok:
+        all_ok = False
+
+    # Redis
+    ok, msg = _check_redis()
+    checks["redis"] = msg if ok else "unavailable (non-critical)"
+
+    # Vector store
+    vectorstore = getattr(request.app.state, "vectorstore", None)
+    ok, msg = await _check_vectorstore(vectorstore)
+    checks["vectorstore"] = msg
     if not ok:
         all_ok = False
 

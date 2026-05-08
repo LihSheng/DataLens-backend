@@ -14,8 +14,6 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 
-from app.services.vectorstore_service import get_llm
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_GROUNDING_PROMPT = ChatPromptTemplate.from_messages([
@@ -91,9 +89,11 @@ class GroundingChecker:
         self,
         threshold: float = 0.7,
         use_llm: bool = True,
+        llm=None,
     ):
         self.threshold = threshold
         self.use_llm = use_llm
+        self._llm = llm
 
     def check(
         self,
@@ -151,7 +151,9 @@ class GroundingChecker:
         documents: List[Document],
     ) -> GroundingResult:
         try:
-            llm = get_llm()
+            llm = self._llm or getattr(self, "_get_default_llm", lambda: None)()
+            if llm is None:
+                return self._heuristic_check(question, answer, documents)
             chain = DEFAULT_GROUNDING_PROMPT | llm | JsonOutputParser()
 
             docs_text = _format_docs(documents)
@@ -241,14 +243,12 @@ def check_grounding(
     documents: List[Document],
     grounding_check_enabled: bool = True,
     threshold: float = 0.7,
+    llm=None,
 ) -> GroundingResult:
-    """
-    Convenience function.
-    """
     if not grounding_check_enabled:
         return GroundingResult(grounded=True, overall_score=1.0, verdict="grounded", claims=[])
 
-    checker = GroundingChecker(threshold=threshold)
+    checker = GroundingChecker(threshold=threshold, llm=llm)
     return checker.check(question, answer, documents)
 
 
